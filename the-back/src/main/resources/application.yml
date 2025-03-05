@@ -9,3 +9,10 @@ spring:
       host: 154.64.254.111
       password: 124578aA
       username: default
+  datasource:
+    url: jdbc:mysql://154.64.254.111:3306/test
+    username: root
+    password: 124578aA
+    driver-class-name: com.mysql.cj.jdbc.Driver
+
+

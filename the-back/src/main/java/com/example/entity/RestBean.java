@@ -15,6 +15,7 @@ public record RestBean<T>(int code, T data, String message) {
      * @return 成功的RestBean实例
      */
     public static <T> RestBean<T> success(T data) {
+
         return new RestBean<>(200, data, "success");
     }
 
@@ -46,7 +47,6 @@ public record RestBean<T>(int code, T data, String message) {
     public static <T> RestBean<T> forbidden(String message) {
         return failure(401, message);
     }
-
     /**
      * 创建一个失败的响应。
      * @param code 状态码
