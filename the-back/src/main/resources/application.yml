@@ -1,1 +1,11 @@
-spring.application.name=the-back
+spring:
+  security:
+    jwt:
+      key : abcdefghi
+      expire : 7
+  data:
+    redis:
+      port: 6379
+      host: 154.64.254.111
+      password: 124578aA
+      username: default
