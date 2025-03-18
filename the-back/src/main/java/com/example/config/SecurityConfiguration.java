@@ -8,7 +8,7 @@ import com.example.service.AccountService;
 import com.example.utils.JwtUtils;
 import jakarta.annotation.Resource;
 import jakarta.servlet.ServletException;
-import jakarta.servlet.http.HttpServlet;
+import jakarta.servlet.http.HttpServlet;        
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.context.annotation.Bean;
@@ -48,7 +48,7 @@ public class SecurityConfiguration {
     public SecurityFilterChain filterChain(HttpSecurity http, JwtAuthorizeFilter jwtAuthorizeFilter) throws Exception {
         return http
                 .authorizeHttpRequests(conf -> conf
-                        .requestMatchers("/api/auth/**").permitAll() // 允许所有对/api/auth/**的请求
+                        .requestMatchers("/api/auth/**", "/error").permitAll() // 允许所有对/api/auth/**的请求
                         .anyRequest().authenticated() // 其他所有请求需要认证
                 )
                 .formLogin(conf -> conf

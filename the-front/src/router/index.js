@@ -10,10 +10,15 @@ const router = createRouter({
             component: () => import('@/views/WelcomeView.vue'),
             children: [
                 {
-                    path: '',
+                    path: 'login',
                     name: 'welcome-login',
-                    component: () => import('@/views/welcome/LoginPage.vue')
+                    component: () => import('@/views/Welcome/LoginPage.vue')
                 },
+                {
+                    path: 'register',
+                    name: 'welcome-register',
+                    component: () => import('@/views/Welcome/RegisterPage.vue')
+                }
             ],
         },
         {
@@ -26,11 +31,11 @@ const router = createRouter({
 
 router.beforeEach((to, from, next) => {
     const unauthorized = isUnauthorized(), admin = isRoleAdmin()
-    if(to.name.startsWith('welcome') && !unauthorized) {
+    if(to.name.startsWith('welcome') && !unauthorized) { //如果路由是welcome开头，并且授权，则跳转到index页面
         next('/index')
-    } else if(to.fullPath.startsWith('/admin') && !admin) {
+    } else if(to.fullPath.startsWith('/admin') && !admin) { //如果路由是admin开头，并且未授权，则跳转到index页面
         next('/index')
-    }else if(to.fullPath.startsWith('/index') && unauthorized) {
+    }else if(to.fullPath.startsWith('/index') && unauthorized) { //如果路由是index开头，并且未授权，则跳转到welcome页面
         next('/')
     } else {
         next()

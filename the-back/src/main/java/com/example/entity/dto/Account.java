@@ -20,6 +20,7 @@ public class Account {
     String role;
     Date register_time;
     //lombok不知为何又无法使用，只能手动添加get set方法
+    public Account(){}
     public Integer getId() {
         return id;
     }

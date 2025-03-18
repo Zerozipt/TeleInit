@@ -93,6 +93,22 @@ function login(username, password, remember, success, failure = defaultFailure){
     }, failure)
 }
 
+function register(username, password, email, code, success, failure = defaultFailure){
+    internalPost('/api/auth/register', { //这里要直接传输json数据,因为后端的@RequestBody注解会自动将json数据转换为对象
+        username: username,
+        password: password,
+        email: email,
+        code: code
+    }, {
+        'Content-Type': 'application/json'
+    }, (data) => {
+        ElMessage.success(`注册成功，欢迎 ${data.username} 来到我们的系统`)
+        success(data)
+    }, (message) => {
+        ElMessage.error(message)
+    })
+}
+
 function post(url, data, success, failure = defaultFailure) {
     internalPost(url, data, accessHeader() , success, failure)
 }
@@ -117,4 +133,11 @@ function isRoleAdmin() {
     return takeAccessToken()?.role === 'admin'
 }
 
-export { post, get, login, logout, isUnauthorized, isRoleAdmin, accessHeader }
+function askVerifyCode(type, email) {
+    return get(`/api/auth/ask-code?type=${type}&email=${email}`, () => {
+    }, (message) => {
+        ElMessage.error(message)
+    })
+}
+
+export { post, get, login, logout, isUnauthorized, isRoleAdmin, accessHeader,register, askVerifyCode }

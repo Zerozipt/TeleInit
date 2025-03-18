@@ -1,4 +1,13 @@
 spring:
+  mail:
+    host: smtp.163.com
+    username: TelesImitators@163.com
+    password: ZPphC36rh8dg54Rv
+  rabbitmq:
+    addresses: 154.64.254.111
+    username: admin
+    password: admin
+    virtual-host: /
   security:
     jwt:
       key : abcdefghi
