@@ -94,12 +94,13 @@ function login(username, password, remember, success, failure = defaultFailure){
 }
 
 function register(username, password, email, code, success, failure = defaultFailure){
-    internalPost('/api/auth/register', { //这里要直接传输json数据,因为后端的@RequestBody注解会自动将json数据转换为对象
+    internalPost('/api/auth/register', { 
         username: username,
         password: password,
         email: email,
         code: code
     }, {
+        //这里要直接传输json数据,因为后端的@RequestBody注解会自动将json数据转换为对象
         'Content-Type': 'application/json'
     }, (data) => {
         ElMessage.success(`注册成功，欢迎 ${data.username} 来到我们的系统`)
@@ -133,6 +134,17 @@ function isRoleAdmin() {
     return takeAccessToken()?.role === 'admin'
 }
 
+function resetPassword(email, code, password, success, failure = defaultFailure){
+    const params = new URLSearchParams();
+    params.append('email', email);
+    params.append('code', code);
+    params.append('password', password);
+    
+    internalPost('/api/auth/reset-password', params, {
+        'Content-Type': 'application/x-www-form-urlencoded'
+    }, success, failure)
+}
+
 function askVerifyCode(type, email) {
     return get(`/api/auth/ask-code?type=${type}&email=${email}`, () => {
     }, (message) => {
@@ -140,4 +152,4 @@ function askVerifyCode(type, email) {
     })
 }
 
-export { post, get, login, logout, isUnauthorized, isRoleAdmin, accessHeader,register, askVerifyCode }
+export { post, get, login, logout, isUnauthorized, isRoleAdmin, accessHeader,register, askVerifyCode, resetPassword}

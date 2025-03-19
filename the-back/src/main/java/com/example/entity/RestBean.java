@@ -38,6 +38,10 @@ public record RestBean<T>(int code, T data, String message) {
         return failure(401, message);
     }
 
+    public static <T> RestBean<T> loginfailed(String message) {
+        return failure(400, message);
+    }
+
     /**
      * 创建一个禁止访问的响应。
      * @param message 错误消息

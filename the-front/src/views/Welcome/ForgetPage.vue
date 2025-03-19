@@ -1,43 +1,36 @@
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { register } from '@/net'
+import { askVerifyCode ,resetPassword} from '@/net'
 import { ElMessage } from 'element-plus'
-import { askVerifyCode } from '@/net'
+
 const router = useRouter()
 const loading = ref(false)
-const registerFormRef = ref()
+const resetFormRef = ref()
 const animateForm = ref(false)
 
 const form = reactive({
-    username: '',
-    password: '',
-    password_repeat: '',
-    email: '',
-    code: ''
+  email: '',
+  code: '',
+  password: '',
+  password_repeat: ''
 })
 
-const validateUsername = (rule, value, callback) => {
-    if(value.length < 3 || value.length > 16){
-        callback(new Error('用户名长度应为3-16个字符'))
-    }else if(!/^[a-zA-Z0-9\u4e00-\u9fa5]+$/.test(value)){
-        callback(new Error('用户名只能包含数字、字母、中文'))
-    }else{
-        callback()
-    }
-}
-
 const rules = {
-  username: [
-    { required: true, message: '请输入用户名', trigger: 'blur' },
-    { validator: validateUsername, trigger: 'blur' }
+  email: [
+    { required: true, message: '请输入邮箱', trigger: 'blur' },
+    { type: 'email', message: '请输入正确的邮箱格式', trigger: 'blur' }
+  ],
+  code: [
+    { required: true, message: '请输入验证码', trigger: 'blur' },
+    { min: 6, max: 6, message: '验证码长度不正确', trigger: 'blur' }
   ],
   password: [
-    { required: true, message: '请输入密码', trigger: 'blur' },
+    { required: true, message: '请输入新密码', trigger: 'blur' },
     { min: 6, max: 20, message: '密码长度应为6-20个字符', trigger: 'blur' }
   ],
   password_repeat: [
-    { required: true, message: '请再次输入密码', trigger: 'blur' },
+    { required: true, message: '请再次输入新密码', trigger: 'blur' },
     { 
       validator: (rule, value, callback) => {
         if (value !== form.password) {
@@ -48,14 +41,6 @@ const rules = {
       }, 
       trigger: 'blur' 
     }
-  ],
-  email: [
-    { required: true, message: '请输入邮箱', trigger: 'blur' },
-    { type: 'email', message: '请输入正确的邮箱格式', trigger: 'blur' }
-  ],
-  code: [
-    { required: true, message: '请输入验证码', trigger: 'blur' },
-    { min: 6, max: 6, message: '验证码长度不正确', trigger: 'blur' }
   ]
 }
 
@@ -63,18 +48,17 @@ onMounted(() => {
   setTimeout(() => animateForm.value = true, 100)
 })
 
-const handleRegister = () => {
-  registerFormRef.value.validate(async (valid) => {
+const handleResetPassword = () => {
+  resetFormRef.value.validate(async (valid) => {
     if (valid) {
       loading.value = true
       try {
-        await register(
-          form.username,
-          form.password,
+        await resetPassword(
           form.email,
           form.code,
+          form.password,
           () => {
-            ElMessage.success('注册成功！')
+            ElMessage.success('密码重置成功！请使用新密码登录')
             router.push('/login')
           },
           (message) => {
@@ -82,7 +66,7 @@ const handleRegister = () => {
           }
         )
       } catch (error) {
-        ElMessage.error('注册过程中发生错误')
+        ElMessage.error('密码重置过程中发生错误')
       } finally {
         loading.value = false
       }
@@ -95,71 +79,41 @@ const sendVerificationCode = () => {
     ElMessage.warning('请先输入邮箱地址')
     return
   }
-
-askVerifyCode('register', form.email, (message) => {
-  console.log(message)
-  if(message == "success"){
-    ElMessage.success('验证码已发送至 ' + form.email)
-  }else{
-    ElMessage.error(message)
-  }
-})
-
+  askVerifyCode('reset', form.email, (message) => {
+    console.log(message)
+    if(message === "success"){
+      ElMessage.success('验证码已发送至 ' + form.email)
+    }else{
+      ElMessage.error(message)
+    }
+  })
 }
 
 const goToLogin = () => router.push({ name: 'welcome-login' })
 </script>
 
 <template>
-  <div class="register-container">
+  <div class="forget-container">
     <div class="background"></div>
     
-    <div class="register-panel" :class="{ 'animate': animateForm }">
-      <div class="register-side">
-        <div class="logo-icon"><i class="el-icon-chat-dot-round"></i></div>
-        <h2>欢迎加入</h2>
-        <p>创建您的账号，开始精彩体验</p>
+    <div class="forget-panel" :class="{ 'animate': animateForm }">
+      <div class="forget-side">
+        <div class="logo-icon"><i class="el-icon-key"></i></div>
+        <h2>找回密码</h2>
+        <p>重置您的账号密码，保障账号安全</p>
         <div class="illustration"></div>
       </div>
 
-      <div class="register-form-container">
-        <h2>用户注册</h2>
-        <p>请填写以下信息完成注册</p>
+      <div class="forget-form-container">
+        <h2>重置密码</h2>
+        <p>请填写以下信息完成密码重置</p>
 
         <el-form
-            ref="registerFormRef"
+            ref="resetFormRef"
             :model="form"
             :rules="rules"
             label-position="top"
-            class="register-form">
-
-          <el-form-item label="用户名" prop="username">
-            <el-input
-                v-model="form.username"
-                placeholder="请输入用户名">
-              <template #prefix><i class="el-icon-user"></i></template>
-            </el-input>
-          </el-form-item>
-
-          <el-form-item label="密码" prop="password">
-            <el-input
-                v-model="form.password"
-                type="password"
-                placeholder="请输入密码"
-                show-password>
-              <template #prefix><i class="el-icon-lock"></i></template>
-            </el-input>
-          </el-form-item>
-
-          <el-form-item label="确认密码" prop="password_repeat">
-            <el-input
-                v-model="form.password_repeat"
-                type="password"
-                placeholder="请再次输入密码"
-                show-password>
-              <template #prefix><i class="el-icon-lock"></i></template>
-            </el-input>
-          </el-form-item>
+            class="forget-form">
 
           <el-form-item label="邮箱" prop="email">
             <el-input
@@ -179,17 +133,37 @@ const goToLogin = () => router.push({ name: 'welcome-login' })
               <el-button type="primary" @click="sendVerificationCode">获取验证码</el-button>
             </div>
           </el-form-item>
+
+          <el-form-item label="新密码" prop="password">
+            <el-input
+                v-model="form.password"
+                type="password"
+                placeholder="请输入新密码"
+                show-password>
+              <template #prefix><i class="el-icon-lock"></i></template>
+            </el-input>
+          </el-form-item>
+
+          <el-form-item label="确认新密码" prop="password_repeat">
+            <el-input
+                v-model="form.password_repeat"
+                type="password"
+                placeholder="请再次输入新密码"
+                show-password>
+              <template #prefix><i class="el-icon-lock"></i></template>
+            </el-input>
+          </el-form-item>
   
           <el-button
               type="primary"
               :loading="loading"
-              class="register-button"
-              @click="handleRegister">
-            {{ loading ? '注册中...' : '立即注册' }}
+              class="forget-button"
+              @click="handleResetPassword">
+            {{ loading ? '提交中...' : '重置密码' }}
           </el-button>
 
           <div class="login-link">
-            已有账号？ <el-button type="text" @click="goToLogin">立即登录</el-button>
+            想起密码了？ <el-button type="text" @click="goToLogin">返回登录</el-button>
           </div>
         </el-form>
       </div>
@@ -198,7 +172,7 @@ const goToLogin = () => router.push({ name: 'welcome-login' })
 </template>
 
 <style scoped>
-.register-container {
+.forget-container {
   display: flex;
   justify-content: center;
   align-items: center;
@@ -219,11 +193,11 @@ const goToLogin = () => router.push({ name: 'welcome-login' })
   z-index: -1;
 }
 
-.register-panel {
+.forget-panel {
   display: flex;
   width: 900px;
   max-width: 90%;
-  min-height: 600px;
+  min-height: 550px;
   background-color: #fff;
   border-radius: 16px;
   box-shadow: 0 10px 20px rgba(0, 0, 0, 0.08);
@@ -233,14 +207,14 @@ const goToLogin = () => router.push({ name: 'welcome-login' })
   transition: all 0.5s ease;
 }
 
-.register-panel.animate {
+.forget-panel.animate {
   opacity: 1;
   transform: translateY(0);
 }
 
-.register-side {
+.forget-side {
   flex: 1;
-  background: linear-gradient(135deg, #32c5ff 0%, #4e7cff 100%);
+  background: linear-gradient(135deg, #ff9a3f 0%, #ff6b6b 100%);
   color: white;
   padding: 40px;
   display: flex;
@@ -263,16 +237,16 @@ const goToLogin = () => router.push({ name: 'welcome-login' })
 
 .logo-icon i {
   font-size: 30px;
-  color: #4e7cff;
+  color: #ff9a3f;
 }
 
-.register-side h2 {
+.forget-side h2 {
   font-size: 28px;
   margin-bottom: 10px;
   font-weight: 600;
 }
 
-.register-side p {
+.forget-side p {
   font-size: 15px;
   opacity: 0.9;
   margin-bottom: 30px;
@@ -286,14 +260,14 @@ const goToLogin = () => router.push({ name: 'welcome-login' })
   margin-top: auto;
 }
 
-.register-form-container {
-  flex: 1.2;
+.forget-form-container {
+  flex: 1;
   padding: 40px;
   display: flex;
   flex-direction: column;
 }
 
-.register-form-container h2 {
+.forget-form-container h2 {
   font-size: 22px;
   color: #32325d;
   font-weight: 600;
@@ -301,15 +275,15 @@ const goToLogin = () => router.push({ name: 'welcome-login' })
   text-align: center;
 }
 
-.register-form-container p {
+.forget-form-container p {
   color: #8898aa;
   font-size: 14px;
   margin-bottom: 25px;
   text-align: center;
 }
 
-.register-form {
-  max-width: 380px;
+.forget-form {
+  max-width: 360px;
   margin: 0 auto;
   width: 100%;
 }
@@ -334,21 +308,21 @@ const goToLogin = () => router.push({ name: 'welcome-login' })
   flex: 1;
 }
 
-.register-button {
+.forget-button {
   width: 100%;
   height: 44px;
   font-size: 16px;
   margin-top: 10px;
   margin-bottom: 16px;
   border-radius: 8px;
-  background: linear-gradient(135deg, #32c5ff 0%, #4e7cff 100%);
+  background: linear-gradient(135deg, #ff9a3f 0%, #ff6b6b 100%);
   border: none;
   transition: all 0.3s;
 }
 
-.register-button:hover {
+.forget-button:hover {
   transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(78, 124, 255, 0.25);
+  box-shadow: 0 4px 12px rgba(255, 154, 63, 0.25);
 }
 
 .login-link {
@@ -359,12 +333,12 @@ const goToLogin = () => router.push({ name: 'welcome-login' })
 }
 
 @media (max-width: 768px) {
-  .register-panel {
+  .forget-panel {
     flex-direction: column;
     min-height: auto;
   }
   
-  .register-side {
+  .forget-side {
     padding: 30px 20px;
   }
   
@@ -373,7 +347,7 @@ const goToLogin = () => router.push({ name: 'welcome-login' })
     margin: 10px 0;
   }
   
-  .register-form-container {
+  .forget-form-container {
     padding: 30px 20px;
   }
   

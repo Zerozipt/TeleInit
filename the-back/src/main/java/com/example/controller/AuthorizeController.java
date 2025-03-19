@@ -15,7 +15,7 @@ import com.example.entity.vo.request.EmailRegisterVO;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import java.util.function.Supplier;
-@Validated
+@Validated  
 @RestController
 @RequestMapping("/api/auth")
 public class AuthorizeController {
@@ -31,6 +31,10 @@ public class AuthorizeController {
         return message == null ? RestBean.success() : RestBean.failure(400, message);
     }
 
+    //login接口不需要自己编写，因为spring security已经为我们提供了
+    //我们只需要在配置类中配置即可
+    //配置类在SecurityConfig类中
+
     @GetMapping("/ask-code")
     //Pattern 正则表达式 作用是限制请求参数的格式
     public RestBean<Void> askVerifyCode(@RequestParam @Pattern(regexp = "register|reset") String type, 
@@ -43,6 +47,13 @@ public class AuthorizeController {
     @PostMapping("/register")
     public RestBean<Void> register(@RequestBody EmailRegisterVO vo){
         return messageHandler(() -> accountService.registerEmailAccount(vo));
+    }
+
+    @PostMapping("/reset-password")
+    public RestBean<Void> resetPassword(@RequestParam @Email String email,
+                                        @RequestParam String code,
+                                        @RequestParam String password){
+        return messageHandler(() -> accountService.updatePasswordDueToForget(email, password, code));
     }
 
 }

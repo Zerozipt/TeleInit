@@ -22,12 +22,16 @@ import java.util.concurrent.TimeUnit;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import com.example.entity.dto.Account;
 import java.util.Date;
+import org.springframework.dao.DataAccessException;
 @Service
 public class AccountServiceImpl extends ServiceImpl<AccountMapper, Account> implements AccountService {
 
     @Resource
+    //密码加密器
     PasswordEncoder passwordEncoder;
+
     @Resource
+    //流量限制器
     FlowUtils flowUtils;
 
     @Resource
@@ -49,6 +53,8 @@ public class AccountServiceImpl extends ServiceImpl<AccountMapper, Account> impl
                 .build();
     }
 
+
+    //根据用户名或邮箱获取用户
     public Account getAccountByUsernameOrEmail(String text) {
         return this.query()
                 .eq("username", text)
@@ -56,6 +62,33 @@ public class AccountServiceImpl extends ServiceImpl<AccountMapper, Account> impl
                 .eq("email", text)
                 .one();
     }
+
+
+    //根据邮箱获取用户密码
+    public String getPasswordByEmail(String email){
+        return this.query()
+                .eq("email", email)
+                .select("password")
+                .one()
+                .getPassword();
+    }
+    
+
+    //根据邮箱，传入新密码，更新密码
+    public String updatePasswordByEmail(String email,String newPassword){
+        try{
+            this.update()
+                .eq("email", email)
+                .set("password", newPassword)
+                .update();
+            return "success";
+        }catch(DataAccessException e){
+            //返回具体错误信息
+            return e.getMessage();
+        }
+    }
+    
+
 
     /*
      * 发送邮箱验证码
@@ -127,10 +160,40 @@ public class AccountServiceImpl extends ServiceImpl<AccountMapper, Account> impl
             stringRedisTemplate.delete(Const.VERIFY_EMAIL_Data + email);
             return null;
         }else{
+            stringRedisTemplate.delete(Const.VERIFY_EMAIL_Data + email);
             return "内部错误，注册失败";
         }
     }
     
+    @Override
+    public String updatePasswordDueToForget(String email,String newPassword,String code){
+        //从redis中获取验证码
+        String codeInRedis = stringRedisTemplate.opsForValue().get(Const.VERIFY_EMAIL_Data + email);
+        if(codeInRedis == null){
+            return "请先获取验证码";
+        }
+        if(!code.equals(codeInRedis)){
+            return "验证码错误";
+        }
+        //验证邮箱是否存在
+        if(!this.existsAccountByEmail(email)){
+            return "邮箱不存在";
+        }
+        //将新密码进行加密
+        String encodedPassword = passwordEncoder.encode(newPassword);
+        //更新密码
+        String result = this.updatePasswordByEmail(email, encodedPassword);
+        if(result.equals("success")){
+            //删除redis中的验证码
+            stringRedisTemplate.delete(Const.VERIFY_EMAIL_Data + email);
+            return null;
+        }else{
+            stringRedisTemplate.delete(Const.VERIFY_EMAIL_Data + email);
+            return result;
+        }
+
+    }
+
     private boolean existsAccountByEmail(String email){
         return this.baseMapper.exists(Wrappers.<Account>query().eq("email",email));
     }

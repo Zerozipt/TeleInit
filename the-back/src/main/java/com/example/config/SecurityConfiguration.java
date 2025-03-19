@@ -136,7 +136,7 @@ public class SecurityConfiguration {
                                         HttpServletResponse response,
                                         AuthenticationException exception) throws IOException, SecurityException {
         response.setContentType("application/json;charset=utf-8"); // 设置响应内容类型为JSON
-        response.getWriter().write(RestBean.unauthorized(exception.getMessage()).asJsonString()); // 返回未授权的响应
+        response.getWriter().write(RestBean.loginfailed(exception.getMessage()).asJsonString()); // 返回未授权的响应
     }
 
     /**
