@@ -49,7 +49,7 @@ public record RestBean<T>(int code, T data, String message) {
      * @return 禁止访问的RestBean实例
      */
     public static <T> RestBean<T> forbidden(String message) {
-        return failure(401, message);
+        return failure(403, message);
     }
     /**
      * 创建一个失败的响应。

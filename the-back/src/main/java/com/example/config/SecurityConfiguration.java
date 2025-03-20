@@ -25,9 +25,13 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
 
 import java.io.IOException;
 import java.io.PrintWriter;
+import com.example.filter.FlowLimitFilter;
 
 @Configuration
 public class SecurityConfiguration {
+
+    @Resource
+    FlowLimitFilter flowLimitFilter;
 
     @Resource
     JwtUtils jwtUtils;
@@ -68,6 +72,7 @@ public class SecurityConfiguration {
                 .sessionManagement(conf -> conf
                         .sessionCreationPolicy(SessionCreationPolicy.STATELESS) // 无状态会话管理
                 )
+                .addFilterBefore(flowLimitFilter, UsernamePasswordAuthenticationFilter.class) // 添加流量限制过滤器
                 .addFilterBefore(jwtAuthorizeFilter, UsernamePasswordAuthenticationFilter.class) // 添加JWT授权过滤器
                 .build();
     }
