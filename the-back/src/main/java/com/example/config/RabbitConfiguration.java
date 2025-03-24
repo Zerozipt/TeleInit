@@ -9,7 +9,7 @@ import org.springframework.amqp.support.converter.MessageConverter;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
-@Configuration
+@Configuration 
 public class RabbitConfiguration {
 
     // 配置消息转换器,原因是springboot默认使用jdk的序列化方式,而rabbitmq默认使用json序列化方式

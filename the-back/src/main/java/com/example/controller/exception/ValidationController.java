@@ -6,8 +6,8 @@ import jakarta.validation.ValidationException;
 import com.example.entity.RestBean;
 import lombok.extern.slf4j.Slf4j;
 
-@Slf4j
-@RestControllerAdvice
+@Slf4j//日志记录
+@RestControllerAdvice//全局异常处理
 public class ValidationController {
     
     // 处理ValidationException异常

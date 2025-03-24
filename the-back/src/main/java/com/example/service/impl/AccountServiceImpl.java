@@ -23,7 +23,7 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import com.example.entity.dto.Account;
 import java.util.Date;
 import org.springframework.dao.DataAccessException;
-@Service
+@Service 
 public class AccountServiceImpl extends ServiceImpl<AccountMapper, Account> implements AccountService {
 
     @Resource
