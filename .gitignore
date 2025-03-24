@@ -1,1 +1,14 @@
 node_modules
+
+package-lock.json
+package.json
+
+the-front.iml
+
+.idea
+.vscode
+
+build/
+dist/
+*.log
+temp/
