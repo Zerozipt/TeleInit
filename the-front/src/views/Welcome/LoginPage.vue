@@ -11,14 +11,14 @@ const loginFormRef = ref()
 const animateForm = ref(false)
 
 const loginForm = reactive({
-  username: '',
+  email: '',
   password: ''
 })
 
 const rules = {
-  username: [
-    { required: true, message: '请输入用户名', trigger: 'blur' },
-    { min: 3, max: 20, message: '用户名长度应为3-20个字符', trigger: 'blur' }
+  email: [
+    { required: true, message: '请输入邮箱', trigger: 'blur' },
+    { type: 'email', message: '请输入正确的邮箱格式', trigger: 'blur' }
   ],
   password: [
     { required: true, message: '请输入密码', trigger: 'blur' },
@@ -38,7 +38,7 @@ const handleLogin = () => {
     if (valid) {
       loading.value = true
       login(
-        loginForm.username,
+        loginForm.email,
         loginForm.password,
         rememberMe.value,
         () => {
@@ -81,10 +81,10 @@ const goToForget = () => router.push({ name: 'welcome-forget' })
             label-position="top"
             class="login-form">
 
-          <el-form-item label="用户名" prop="username">
+          <el-form-item label="邮箱" prop="email">
             <el-input
-                v-model="loginForm.username"
-                placeholder="请输入用户名">
+                v-model="loginForm.email"
+                placeholder="请输入邮箱">
               <template #prefix><i class="el-icon-user"></i></template>
             </el-input>
           </el-form-item>

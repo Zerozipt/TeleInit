@@ -30,13 +30,19 @@ const router = createRouter({
             path: '/index',
             name: 'indexPage',
             component: () => import('@/views/IndexView.vue'),
+        },
+        {
+            path: '/chat-debugger',
+            name: 'chatDebugger',
+            component: () => import('@/views/ChatDebugger.vue'),
+            meta: { requiresAuth: false }
         }
-        ]
+    ]
 })
 
 router.beforeEach((to, from, next) => {
     const unauthorized = isUnauthorized(), admin = isRoleAdmin()
-    if(to.name.startsWith('welcome') && !unauthorized) { //如果路由是welcome开头，并且授权，则跳转到index页面
+    if(to.name && to.name.startsWith('welcome') && !unauthorized) { //如果路由是welcome开头，并且授权，则跳转到index页面
         next('/index')
     } else if(to.fullPath.startsWith('/admin') && !admin) { //如果路由是admin开头，并且未授权，则跳转到index页面
         next('/index')

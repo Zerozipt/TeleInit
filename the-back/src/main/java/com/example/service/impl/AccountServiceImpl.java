@@ -40,14 +40,16 @@ public class AccountServiceImpl extends ServiceImpl<AccountMapper, Account> impl
     @Resource
     StringRedisTemplate stringRedisTemplate;
 
+    //修改security的loadUserByUsername方法
+    //我们这个业务只允许邮箱登录，因为我们不限制用户名唯一
     @Override
     public UserDetails loadUserByUsername(String username) throws UsernameNotFoundException {
-        Account account = this.getAccountByUsernameOrEmail(username);
+        Account account = this.getAccountByEmail(username);
         if (account == null) {
-            throw new UsernameNotFoundException("用户名或密码错误");
+            throw new UsernameNotFoundException("邮箱或密码错误");
         }
         return User
-                .withUsername(username)
+                .withUsername(account.getUsername())
                 .password(account.getPassword())
                 .roles(account.getRole())
                 .build();
@@ -60,6 +62,12 @@ public class AccountServiceImpl extends ServiceImpl<AccountMapper, Account> impl
                 .eq("username", text)
                 .or()
                 .eq("email", text)
+                .one();
+    }
+
+    public Account getAccountByEmail(String email){
+        return this.query()
+                .eq("email", email)
                 .one();
     }
 
@@ -143,10 +151,10 @@ public class AccountServiceImpl extends ServiceImpl<AccountMapper, Account> impl
         if(this.existsAccountByEmail(email)){
             return "邮箱已被注册";
         }
-        //判断用户名是否已被注册
-        if(this.existsAccountByUsername(vo.getUsername())){
-            return "用户名已被注册";
-        }
+        //由于我们不限制用户名唯一，所以不需要判断用户名是否已被注册
+        // if(this.existsAccountByUsername(vo.getUsername())){
+        //     return "用户名已被注册";
+        // }
         String password = vo.getPassword();
         String encodedPassword = passwordEncoder.encode(password);
         Account account = new Account();

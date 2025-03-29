@@ -51,8 +51,11 @@ public class SecurityConfiguration {
     @Bean
     public SecurityFilterChain filterChain(HttpSecurity http, JwtAuthorizeFilter jwtAuthorizeFilter) throws Exception {
         return http
+                // 分别是：
+                // 1. 允许所有对/api/auth/**的请求
+                // 2. 允许所有对/error的请求
                 .authorizeHttpRequests(conf -> conf
-                        .requestMatchers("/api/auth/**", "/error").permitAll() // 允许所有对/api/auth/**的请求
+                        .requestMatchers("/api/auth/**", "/error", "/ws-chat/**").permitAll() // 允许所有对/api/auth/**的请求
                         .anyRequest().authenticated() // 其他所有请求需要认证
                 )
                 .formLogin(conf -> conf

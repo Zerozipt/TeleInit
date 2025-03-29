@@ -12,5 +12,5 @@ public class Const {
     public static final int ORDER_FLOW_LIMIT = -101;
 
 
-    public static final int FLOW_LIMIT_COUNT = 20;
+    public static final int FLOW_LIMIT_COUNT = 60;
 }

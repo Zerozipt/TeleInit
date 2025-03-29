@@ -15,4 +15,26 @@ export default defineConfig({
       '@': fileURLToPath(new URL('./src', import.meta.url))
     },
   },
+  define: {
+    // 为sockjs-client提供global对象
+    global: {}
+  },
+  optimizeDeps: {
+    esbuildOptions: {
+      // 定义全局变量
+      define: {
+        global: 'globalThis'
+      }
+    }
+  },
+  server: {  
+    proxy: {  
+      '/ws': {  
+          target: 'http://localhost:8080', // 后端地址  
+          changeOrigin: true,  
+          secure: false,  
+          ws: true // 如果需要代理 WebSocket  
+      }  
+    }  
+  }  
 })

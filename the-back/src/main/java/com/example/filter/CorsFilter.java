@@ -24,6 +24,7 @@ public class CorsFilter extends HttpFilter {
     @Override
     protected void doFilter(HttpServletRequest request, HttpServletResponse response, FilterChain chain) throws IOException, ServletException {
         this.addCorsHeader(request, response);
+
         chain.doFilter(request, response);
     }
 
@@ -33,9 +34,10 @@ public class CorsFilter extends HttpFilter {
      * @param response 响应
      */
     private void addCorsHeader(HttpServletRequest request, HttpServletResponse response) {
-        response.addHeader("Access-Control-Allow-Origin", request.getHeader("Origin"));
+        response.addHeader("Access-Control-Allow-Origin","http://localhost:5173");
         response.addHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
         response.addHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
-
+        //Credentials的意思是允许携带凭证
+        response.addHeader("Access-Control-Allow-Credentials", "true"); 
     }
 }

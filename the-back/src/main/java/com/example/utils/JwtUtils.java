@@ -13,7 +13,7 @@ import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.userdetails.User;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.stereotype.Component;
-
+import java.security.Principal;
 import java.util.Calendar;
 import java.util.Date;
 import java.util.Map;
@@ -111,6 +111,26 @@ public class JwtUtils {
         }
     }
 
+    //和resolveJWT一样，但是传输过来的token是直接从localstorage中获取的，不需要去除Bearer前缀
+    public DecodedJWT resolveJWTFromLocalStorage(String token) {
+        // 使用HMAC256算法创建JWT验证器
+        Algorithm algorithm = Algorithm.HMAC256(key);
+        JWTVerifier jwtVerifier = JWT.require(algorithm).build();
+        try {
+            // 验证JWT令牌
+            DecodedJWT verify = jwtVerifier.verify(token);
+            // 检查令牌是否已经无效
+            if (this.isInvalidToken(verify.getId())) return null;
+            // 获取令牌的过期时间
+            Date expire = verify.getExpiresAt();
+            // 检查令牌是否已过期
+            return new Date().before(expire) ? verify : null;
+        } catch (JWTVerificationException e) {
+            // 如果验证失败，返回null
+            return null;
+        }
+    }
+
     /**
      * 创建JWT令牌。
      * @param details 用户详情
@@ -188,4 +208,39 @@ public class JwtUtils {
         // 提取用户ID
         return claims.get("id").asInt();
     }
+
+    //返回Principal对象
+    public Principal parseToken(String token) {
+        // 去除Bearer前缀
+        String jwt = token.substring(7);
+        // 使用HMAC256算法创建JWT验证器
+        Algorithm algorithm = Algorithm.HMAC256(key);
+        JWTVerifier jwtVerifier = JWT.require(algorithm).build();
+        // 验证JWT令牌
+        DecodedJWT verify = jwtVerifier.verify(jwt);
+        // 获取JWT的所有声明
+        Map<String, Claim> claims = verify.getClaims();
+        // 创建Principal对象
+        return new Principal() {
+            @Override
+            public String getName() {
+                return claims.get("name").asString();
+            }
+        };  
+    }
+
+    public String getUsernameFromToken(String token) {
+        // 去除Bearer前缀
+        String jwt = token.substring(7);
+        // 使用HMAC256算法创建JWT验证器
+        Algorithm algorithm = Algorithm.HMAC256(key);
+        JWTVerifier jwtVerifier = JWT.require(algorithm).build();
+        // 验证JWT令牌
+        DecodedJWT verify = jwtVerifier.verify(jwt);
+        // 获取JWT的所有声明
+        Map<String, Claim> claims = verify.getClaims();
+        // 返回用户名
+        return claims.get("name").asString();
+    }
+
 }

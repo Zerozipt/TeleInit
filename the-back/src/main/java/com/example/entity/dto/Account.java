@@ -11,7 +11,7 @@ import java.util.Date;
 @Data
 @TableName("db_account")
 @AllArgsConstructor
-public class Account {
+public class Account{
     @TableId(type = IdType.AUTO)
     Integer id;
     String username;
@@ -57,4 +57,5 @@ public class Account {
     public void setRegister_time(Date register_time) {
         this.register_time = register_time;
     }
+
 }

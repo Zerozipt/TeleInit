@@ -28,12 +28,44 @@ public class FlowLimitFilter extends HttpFilter {
     @Override
     protected void doFilter(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws IOException, ServletException {  
+        // 对WebSocket请求不进行流量限制
+        if (isWebSocketRequest(request)) {
+            chain.doFilter(request, response);
+            return;
+        }
+        
         String ip = request.getRemoteAddr();
         if(tryCount(ip)){
             chain.doFilter(request, response);
         }else{
             this.writeBlockMessage(response);
         }
+    }
+    //如果是websocket请求，则不进行流量限制
+    // 判断是否为WebSocket请求
+    private boolean isWebSocketRequest(HttpServletRequest request) {
+        // 检查请求路径是否为WebSocket端点
+        String requestURI = request.getRequestURI();
+        if (requestURI != null) {
+            // 匹配WebSocket主端点和SockJS相关端点
+            if (requestURI.contains("/ws-chat")) {
+                return true;
+            }
+            // 匹配SockJS的轮询请求
+            if (requestURI.matches(".*\\/ws-chat\\/\\d+\\/.*")) {
+                return true;
+            }
+            // 匹配SockJS的info请求
+            if (requestURI.contains("/ws-chat/info")) {
+                return true;
+            }
+        }
+        
+        // 检查请求头是否包含WebSocket相关信息
+        String upgrade = request.getHeader("Upgrade");
+        String connection = request.getHeader("Connection");
+        return "websocket".equalsIgnoreCase(upgrade) || 
+               (connection != null && connection.toLowerCase().contains("upgrade"));
     }
 
     private void writeBlockMessage(HttpServletResponse response) throws IOException {
@@ -61,7 +93,7 @@ public class FlowLimitFilter extends HttpFilter {
                 return false;
             }
         }else{
-            stringRedisTemplate.opsForValue().set(Const.FLOW_LIMIT_COUNTER + ":" + ip, "1", 3, TimeUnit.SECONDS);
+            stringRedisTemplate.opsForValue().set(Const.FLOW_LIMIT_COUNTER + ":" + ip, "1", 1, TimeUnit.SECONDS);
         }
         return true;
     }

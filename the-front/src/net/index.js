@@ -1,7 +1,7 @@
 import axios from "axios";
 import {ElMessage} from "element-plus";
 import router from "@/router";
-
+// import { WebSocket } from 'ws';
 const authItemName = "authorize"
 
 const accessHeader = () => {
@@ -152,4 +152,10 @@ function askVerifyCode(type, email) {
     })
 }
 
-export { post, get, login, logout, isUnauthorized, isRoleAdmin, accessHeader,register, askVerifyCode, resetPassword}
+// 创建一个WebSocket连接的函数而不是直接赋值给WebSocket
+function createChatWebSocket(userId) {
+    return new WebSocket(`ws://localhost:8080/chat/${userId}`);
+}
+
+// 导出WebSocket创建函数
+export { post, get, login, logout, isUnauthorized, isRoleAdmin, accessHeader, register, askVerifyCode, resetPassword, createChatWebSocket }
