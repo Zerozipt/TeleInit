@@ -5,7 +5,7 @@ import com.example.entity.dto.Account;
 import com.example.entity.vo.request.EmailRegisterVO;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.core.userdetails.UserDetailsService;
-
+import java.util.List;
 public interface AccountService extends IService<Account>, UserDetailsService {
     Account getAccountByUsernameOrEmail(String text);
 
@@ -19,4 +19,5 @@ public interface AccountService extends IService<Account>, UserDetailsService {
 
     String updatePasswordDueToForget(String email,String newPassword,String code);  
 
+    Account getAccountById(int id);
 }

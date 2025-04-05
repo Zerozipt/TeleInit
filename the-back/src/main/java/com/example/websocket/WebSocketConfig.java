@@ -24,6 +24,7 @@ import org.springframework.messaging.simp.stomp.StompCommand;
 import java.util.Collections;
 import org.springframework.messaging.MessageChannel;
 import com.auth0.jwt.interfaces.DecodedJWT;
+import com.example.entity.vo.request.CustomPrincipal;
 
 @Configuration
 @EnableWebSocketMessageBroker
@@ -59,9 +60,11 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
                                 // 验证JWT令牌  
                                 DecodedJWT jwt = jwtUtils.resolveJWTFromLocalStorage(token);  
                                 if (jwt != null) {  
-                                    String username = jwt.getClaim("name").asString();  
-                                    System.out.println("JWT验证成功，用户名: " + username);  
-                                    return () -> username;  
+                                    String username = jwt.getClaim("name").asString();
+                                    String userId = jwt.getClaim("id").asString();  // 假设JWT中包含用户ID的claim名为"id"
+                                    System.out.println("JWT验证成功，用户名: " + username + ", 用户ID: " + userId);  
+                                    
+                                    return new CustomPrincipal(userId, username);  
                                 }  
                             }  
                         }  
@@ -124,5 +127,7 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
     public org.springframework.messaging.simp.SimpMessagingTemplate messagingTemplate(org.springframework.messaging.simp.SimpMessageSendingOperations brokerMessagingTemplate) {
         return (org.springframework.messaging.simp.SimpMessagingTemplate) brokerMessagingTemplate;
     }
+
+
 }
 // ... existing code ...

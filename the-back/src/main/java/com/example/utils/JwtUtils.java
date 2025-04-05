@@ -69,7 +69,6 @@ public class JwtUtils {
         Date now = new Date();
         // 计算令牌剩余的有效时间
         long expire = Math.max(time.getTime() - now.getTime(), 0);
-        // 将令牌加入黑名单
         template.opsForValue().set(Const.JWT_BLACK_LIST + uuid, "", expire, TimeUnit.MILLISECONDS);
         return true;
     }
@@ -136,6 +135,7 @@ public class JwtUtils {
      * @param details 用户详情
      * @param id 用户ID
      * @param username 用户名
+     * @param userId 用户唯一ID
      * @return JWT令牌
      */
     public String CreateJWT(UserDetails details, int id, String username) {
@@ -143,11 +143,13 @@ public class JwtUtils {
         Algorithm algorithm = Algorithm.HMAC256(key);
         // 获取令牌的过期时间
         Date expireTime = this.expireTime();
+        String userId = String.valueOf(id);
         // 创建JWT令牌
         return JWT.create()
                 .withJWTId(UUID.randomUUID().toString())
-                .withClaim("id", id)
+                .withClaim("id", userId)
                 .withClaim("name", username)
+                .withClaim("userId", userId)
                 .withClaim("authorities", details.getAuthorities().stream()
                         .map(GrantedAuthority::getAuthority).toList())
                 .withExpiresAt(expireTime)

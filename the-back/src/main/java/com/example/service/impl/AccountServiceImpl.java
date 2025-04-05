@@ -1,5 +1,6 @@
 package com.example.service.impl;
-
+import java.util.List;
+import java.util.stream.Collectors;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.example.entity.dto.Account;
@@ -23,7 +24,12 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import com.example.entity.dto.Account;
 import java.util.Date;
 import org.springframework.dao.DataAccessException;
-@Service 
+import com.alibaba.fastjson2.JSON;
+import com.example.mapper.FriendsMapper;
+import com.example.entity.dto.Friends;
+import com.example.mapper.Group_memberMapper;
+import com.example.entity.dto.Group_member;
+@Service //extends ServiceImpl<AccountMapper, Account> implements AccountService
 public class AccountServiceImpl extends ServiceImpl<AccountMapper, Account> implements AccountService {
 
     @Resource
@@ -39,6 +45,12 @@ public class AccountServiceImpl extends ServiceImpl<AccountMapper, Account> impl
 
     @Resource
     StringRedisTemplate stringRedisTemplate;
+
+    @Resource
+    FriendsMapper friendsMapper;
+
+    @Resource
+    Group_memberMapper groupMemberMapper;
 
     //修改security的loadUserByUsername方法
     //我们这个业务只允许邮箱登录，因为我们不限制用户名唯一
@@ -202,6 +214,13 @@ public class AccountServiceImpl extends ServiceImpl<AccountMapper, Account> impl
 
     }
 
+    @Override
+    public Account getAccountById(int id){
+        return this.query()
+                .eq("id", id)
+                .one();
+    }
+    
     private boolean existsAccountByEmail(String email){
         return this.baseMapper.exists(Wrappers.<Account>query().eq("email",email));
     }

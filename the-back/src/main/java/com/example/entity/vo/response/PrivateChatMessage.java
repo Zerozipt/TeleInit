@@ -1,14 +1,16 @@
 package com.example.entity.vo.response;
-
+import lombok.Data;
 import java.util.Date;
 
+@Data
 public class PrivateChatMessage {
     private String content;
     private String fromUser;   // 发送者
     private String toUser;     // 接收者
     private Date timestamp;
     private boolean isRead;    // 是否已读
-    
+    private String fromUserId; // 发送者ID
+    private String toUserId;
     // 构造方法
     public PrivateChatMessage() {
         this.timestamp = new Date();
@@ -46,4 +48,10 @@ public class PrivateChatMessage {
     public void setRead(boolean isRead) {
         this.isRead = isRead;
     }
+    public String getFromUserId() {
+        return fromUserId;
+    }
+    public void setFromUserId(String fromUserId) {
+        this.fromUserId = fromUserId;
+    }   
 }

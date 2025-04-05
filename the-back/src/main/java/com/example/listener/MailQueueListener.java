@@ -21,8 +21,9 @@ public class MailQueueListener {
     @Value("${spring.mail.username}")
     String username;
 
-    //TODO: 发送邮件
+    //发送邮件
     @RabbitHandler
+    //经过这个函数后，消息从队列中删除，如果想要保留，需要设置autoDelete为false，也可以重新发送消息到队列中
     public void sendMailMessage(Map<String, Object> data){
         String email = (String)data.get("email").toString();
         Integer code = (Integer) data.get("code");
@@ -35,9 +36,10 @@ public class MailQueueListener {
         };
         if(message == null) return;
         mailSender.send(message);
+        //邮件发送成功后，自动将该消息从队列中删除
     }
 
-    //TODO: 发送邮件
+    //创建邮件
     private SimpleMailMessage createMessage(String title,String content,String email){
         SimpleMailMessage message = new SimpleMailMessage();
         message.setFrom(username);
