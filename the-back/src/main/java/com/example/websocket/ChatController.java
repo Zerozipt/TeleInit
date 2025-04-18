@@ -71,11 +71,14 @@ public class ChatController {
         }
     }
 
-    public void sendMessageToGroup(String groupId, String message) {  
-        int channelId = Math.abs(groupId.hashCode() % 100);  
-        String destination = "/topic/channel" + channelId;  
-        messagingTemplate.convertAndSend(destination, message);  
-    } 
+    // 修改方法签名，接受 Object (或 ChatMessage)
+    public void sendMessageToGroup(String groupId, Object messagePayload) {
+        String destination = "/topic/channel/" + groupId;
+        // 使用 JSON.toJSONString 打印，避免直接 toString 可能不清晰
+        System.out.println("发送消息到群组: " + destination + ", 消息内容: " + JSON.toJSONString(messagePayload));
+        // 发送完整的对象，SimpMessagingTemplate 会自动处理 JSON 转换
+        messagingTemplate.convertAndSend(destination, messagePayload);
+    }
 
     // 这个方法现在只从Authorization头中获取JWT
     @PostMapping("/GetThePrivateMessage")
@@ -100,6 +103,7 @@ public class ChatController {
             List<FriendsResponse> friendIds = chatService.getFriends(userId);
             //从redis中获取群聊关系
             List<Group_member> groupIds = chatService.getGroups(userId);
+            System.out.println("群组列表: " + groupIds);
             //构建返回message，包括用户id，用户名，用户的好友关系和群聊关系，要求返回的格式为json
             JSONObject jsonObject = new JSONObject();
             jsonObject.put("userId", userId);
@@ -122,9 +126,10 @@ public class ChatController {
     @MessageMapping("/chat/channel") // 移除 {groupId}
     public void handlePublicMessage(@Payload ChatMessage message, // 只接收内容即可，其他由后端填充
                                          CustomPrincipal principal) {
+        System.out.println("群组消息: " + message);
         // 填充发送者和时间戳
-        message.setSender(principal.getName());
-        message.setSender(principal.getUserId());
+        message.setSenderId(Integer.parseInt(principal.getName()));
+        message.setSender(principal.getUsername());
         // 使用 Instant 获取 ISO 8601 格式时间戳，更标准
         // 如果 ChatMessage 需要 Date，则转换，否则直接用 String
         message.setTimestamp(Date.from(Instant.now())); // 或者直接设置 String 类型的时间戳
@@ -139,7 +144,8 @@ public class ChatController {
         stringRedisTemplate.opsForList().rightPush(key, JSON.toJSONString(message));
         // 设置过期时间
         stringRedisTemplate.expire(key, Const.MESSAGE_EXPIRE_DAYS, TimeUnit.DAYS);
-        this.sendMessageToGroup(groupId, message.getContent());
+        // 传递完整的 message 对象
+        this.sendMessageToGroup(groupId, message);
     }
 
     // 处理私人消息 - 简化，不使用路径变量

@@ -12,6 +12,8 @@ public class Const {
     
     public static final String PRIVATE_CHAT_KEY = "chat:private:";
     public static final String GROUP_CHAT_KEY = "chat:group:";
+
+    public static final String GROUP_CHAT_MEMBER_KEY = "chat:group:member:";
     public static final int MESSAGE_EXPIRE_DAYS = 7; // 消息保存7天
 
     public static final int ORDER_CORS = -102;

@@ -167,7 +167,7 @@ public class ChatServiceImpl implements ChatService {
 
     @Override
     public List<Group_member> getGroups(String userId) {
-        String key = Const.GROUP_CHAT_KEY + ":" + userId;
+        String key = Const.GROUP_CHAT_MEMBER_KEY + ":" + userId;
         List<Group_member> groupsList = null;
 
         try {
@@ -196,6 +196,7 @@ public class ChatServiceImpl implements ChatService {
              groupsList = getGroupsByUserId(userId);
              // 4. 将从数据库获取的数据存入 Redis 缓存 (序列化为 JSON 字符串)
              //    并设置过期时间 (例如：1 小时)
+             System.out.println("从数据库获取的群组列表: " + groupsList);
              if (groupsList != null) {
                  try {
                     String jsonToCache = JSON.toJSONString(groupsList);
@@ -230,8 +231,8 @@ public class ChatServiceImpl implements ChatService {
     public List<Group_member> getGroupsByUserId(String userId){
         try {
             int id = Integer.parseInt(userId);
-            // 调用新的 Mapper 方法执行 JOIN 查询
-            return groupMemberMapper.findUserGroupsWithNames(id);
+            System.out.println("从数据库获取的群组列表: " + id);
+            return groupMemberMapper.selectList(Wrappers.<Group_member>query().eq("user_id", id));
         } catch (NumberFormatException e) {
             logger.error("Invalid userId format: {}", userId, e);
             // 或者抛出自定义异常，或者返回空列表，根据你的错误处理策略决定

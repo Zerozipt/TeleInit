@@ -33,5 +33,6 @@ public interface ChatService {
     List<FriendsResponse> getFriends(String userId);
 
     // 获取用户所在的群组信息
+    
     List<Group_member> getGroups(String userId);
 } 

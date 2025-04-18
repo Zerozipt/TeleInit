@@ -60,9 +60,9 @@ public class GroupServiceImpl implements GroupService {
 
         // 2. 将创建者添加为群成员 (通常是管理员或群主)
         Group_member creatorMember = new Group_member();
-        creatorMember.setGroup_id(newGroup.getGroupId());
-        creatorMember.setUser_id(creatorId);
-        creatorMember.setJoined_at(new Date()); // 格式化加入时间
+        creatorMember.setGroupId(newGroup.getGroupId());
+        creatorMember.setUserId(creatorId);
+        creatorMember.setJoinedAt(new Date()); // 格式化加入时间
         creatorMember.setRole("CREATOR"); // 或者 "ADMIN", "OWNER" 等
 
         int memberInserted = groupMemberMapper.insert(creatorMember);
@@ -111,9 +111,9 @@ public class GroupServiceImpl implements GroupService {
 
         // 7. 添加新成员，使用实际的 groupId
         Group_member newMember = new Group_member();
-        newMember.setGroup_id(actualGroupId); // 使用从 group 对象获取的 ID
-        newMember.setUser_id(userId);
-        newMember.setJoined_at(new Date()); // 推荐直接使用 Date 类型
+        newMember.setGroupId(actualGroupId); // 使用从 group 对象获取的 ID
+        newMember.setUserId(userId);
+        newMember.setJoinedAt(new Date()); // 推荐直接使用 Date 类型
         newMember.setRole("MEMBER"); // 默认角色为普通成员
 
         int inserted = groupMemberMapper.insert(newMember);

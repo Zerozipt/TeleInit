@@ -91,6 +91,7 @@ class StompClientWrapper {
                             if (data.groupIds) {
                                 const parsedGroups = JSON.parse(data.groupIds) || [];
                                 this.groups.value = parsedGroups;
+                                console.log('[StompClientWrapper] 解析群组列表成功, 群组列表:', parsedGroups);
                                 console.log('[StompClientWrapper] 解析群组列表成功, 群组数量:', parsedGroups.length);
                             }
                         } catch (parseError) {
@@ -302,26 +303,32 @@ class StompClientWrapper {
 
     // --- 订阅 ---
     _subscribeToPublic() {
-        //订阅的频道是动态的，根据频道id订阅对应的频道,频道id是群组id,群组id是群组id的hash值对100取余
         //由于用户可能有很多群组，所以需要批量订阅
         this.groups.value.forEach(groupId => {
-            const destination = '/topic/channel' + groupId % 100;
+            const destination = '/topic/channel/' + groupId.groupId;
+            console.log('[StompClientWrapper] 正在订阅群组消息频道:', destination);
             // 如果订阅不存在，并且连接成功，则订阅
             if (!this.subscriptions[destination] && this.stompClient.value?.connected) {
                 try {
                 // 订阅
+                console.log('[StompClientWrapper] 正在订阅群组消息频道:', destination);
                  this.subscriptions[destination] = this.stompClient.value.subscribe(destination, (message) => {
                     try {
-                        // 解析消息，主要要注意，发送来的消息头是groupId，要注意这个groupId是不是当前用户的群组
-                        const messageGroupId = message.headers['group-id'];
-                        if (messageGroupId === groupId) {
-                            const parsedMessage = JSON.parse(message.body);
+                        // 不再需要从 header 读取 groupId
+                        // const messageGroupId = message.headers['groupId'];
+                        // if (messageGroupId === groupId) { // groupId 在这里是 Group_member 对象
+                        const parsedMessage = JSON.parse(message.body); // message.body 现在是 ChatMessage 的 JSON 字符串
+                        // 验证收到的消息中的 groupId 是否与当前订阅的群组匹配
+                        if (parsedMessage.groupId === groupId.groupId) { // 使用 groupId 对象的 groupId 属性
                             // 使用 ISO 格式或根据需要格式化时间戳
                             // parsedMessage.timestamp = new Date(parsedMessage.timestamp).toLocaleString();
-                            console.log('[StompClientWrapper] Received public message:', parsedMessage);
+                            console.log('[StompClientWrapper] Received public message for correct group:', parsedMessage);
                             // 触发事件，通知前端收到消息
                             this._trigger('onPublicMessage', parsedMessage);
+                        } else {
+                            console.warn('[StompClientWrapper] Received public message for wrong group:', parsedMessage, 'Expected group:', groupId.groupId);
                         }
+                        // }
                     } catch (e) {
                         console.error('[StompClientWrapper] Error parsing public message:', e, message.body);
                     }
