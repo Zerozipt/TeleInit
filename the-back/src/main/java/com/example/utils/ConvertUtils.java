@@ -9,12 +9,13 @@ import com.example.entity.dto.Account;
 public class ConvertUtils {
     public static Group_message convertToGroupMessage(ChatMessage message){
         Group_message group_message = new Group_message();
+        System.out.println("转换群组消息: " + message);
         group_message.setGroupId(message.getGroupId());
         group_message.setContent(message.getContent());
-        group_message.setSender(message.getSender());
-        group_message.setCreate_at(message.getTimestamp());
-        group_message.setContent_type((short)1);
-        group_message.setFile_url(null);
+        group_message.setSenderId(message.getSenderId());
+        group_message.setCreateAt(message.getTimestamp());
+        group_message.setContentType((short)1);
+        group_message.setFileUrl(null);
         return group_message;
     }
 

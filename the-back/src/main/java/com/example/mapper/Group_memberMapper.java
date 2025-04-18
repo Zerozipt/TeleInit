@@ -17,9 +17,8 @@ public interface Group_memberMapper extends BaseMapper<Group_member> {
      * @param userId 用户ID
      * @return 包含群组名称的 Group_member 列表
      */
-    @Select("SELECT gm.user_id, gm.group_id, gm.joined_at, gm.role, g.name as groupname " +
+    @Select("SELECT gm.user_id, gm.group_id, gm.joined_at, gm.role " +
             "FROM group_members gm " +
-            "JOIN `Group` g ON gm.group_id = g.group_id " +
             "WHERE gm.user_id = #{userId}")
     List<Group_member> findUserGroupsWithNames(@Param("userId") int userId);
 

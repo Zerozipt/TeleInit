@@ -39,7 +39,7 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
                 .setAllowedOriginPatterns("*")  
                 .setHandshakeHandler(new DefaultHandshakeHandler() {  
                     @Override  
-                    protected Principal determineUser(ServerHttpRequest request, WebSocketHandler wsHandler, Map<String, Object> attributes) {  
+                    protected CustomPrincipal determineUser(ServerHttpRequest request, WebSocketHandler wsHandler, Map<String, Object> attributes) {  
                         // 从URL参数中获取令牌  
                         String token = null;  
                         String query = request.getURI().getQuery();  

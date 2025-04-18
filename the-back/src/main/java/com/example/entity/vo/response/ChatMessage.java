@@ -13,15 +13,10 @@ public class ChatMessage {
     private String roomId;     // 聊天室/频道ID (可选)
     private Date timestamp;    // 时间戳
     private String groupId;    // 频道ID
+    private Integer senderId;  // 发送者ID
     // 枚举定义消息类型
     public enum MessageType {
         CHAT, JOIN, LEAVE, NOTICE
     }
-    
-    // 构造方法
-    public ChatMessage() {
-        this.timestamp = new Date();
-    }
-    
 
 }

@@ -589,7 +589,8 @@ export default {
     const activeChatId = ref(null);  
     const activeChatType = ref(null);  
     const activeChat = ref(null);  
-    const messages = ref([]);  
+    const chatMessages = reactive({}); // key: 'private-{userId}' or 'group-{groupId}', value: [message, ...]
+    const messages = ref([]); // 这个 ref 将指向 chatMessages 中对应的数组
     const messageText = ref('');  
     const searchText = ref('');  
     const messageContainer = ref(null);  
@@ -690,12 +691,12 @@ export default {
         //            并直接使用 groupname。
 
         // 检查是否存在 groupname
-        if (groupObj && typeof groupObj.groupname !== 'undefined') {
+        if (groupObj && typeof groupObj.groupName !== 'undefined') {
           groups.push({
             // *** 使用索引或其他方式生成一个临时 ID (如果需要) ***
             // 例如，如果 UI 列表需要一个 key，可以用索引或 groupname+index
-            id: `group_${index}`, // 使用索引生成一个简单的临时 ID
-            name: groupObj.groupname, // *** 使用 groupname ***
+            id: groupObj.groupId, // 使用索引生成一个简单的临时 ID
+            name: groupObj.groupName, // *** 使用 groupname ***
             avatar: `/api/placeholder/80/80`,
             // 你仍然可以从 groupObj 中获取其他信息，比如 role
             role: groupObj.role, // 假设你想存储角色信息
@@ -726,27 +727,31 @@ export default {
       
       // 添加好友聊天  
       friends.forEach(friend => {  
+        const chatKey = `private-${friend.id}`;
+        const lastMessageObj = chatMessages[chatKey]?.[chatMessages[chatKey].length - 1];
         chatList.push({  
           id: friend.id,           // 使用好友的userId
           name: friend.name,       // 使用好友的username用于显示
           avatar: friend.avatar,  
           type: 'private',  
-          lastMessage: '',  
-          lastTime: '',  
-          unread: 0  
+          lastMessage: lastMessageObj?.content || '',  
+          lastTime: lastMessageObj ? formatTime(lastMessageObj.timestamp) : '',  
+          unread: 0 // 未读计数逻辑后面处理
         });  
       });  
 
       // 添加群组聊天  
       groups.forEach(group => {  
+        const chatKey = `group-${group.id}`;
+        const lastMessageObj = chatMessages[chatKey]?.[chatMessages[chatKey].length - 1];
         chatList.push({  
           id: group.id,  
           name: group.name,  
           avatar: group.avatar,  
           type: 'group',  
-          lastMessage: '',  
-          lastTime: '',  
-          unread: 0  
+          lastMessage: lastMessageObj?.content || '',  
+          lastTime: lastMessageObj ? formatTime(lastMessageObj.timestamp) : '',  
+          unread: 0 // 未读计数逻辑后面处理
         });  
       });  
       
@@ -780,46 +785,64 @@ export default {
       console.log("选择聊天对象：", chat);
       activeChatId.value = chat.id;  // 存储选中的好友userId或群组id
       activeChatType.value = chat.type;  
+
+      let targetChat = null; // 用于存储找到的 friend 或 group 对象
       
       if (chat.type === 'private') {  
-        const friend = friends.find(f => f.id === chat.id);  
-        if (friend) {
-          console.log("已找到好友信息：", friend);
+        targetChat = friends.find(f => f.id === chat.id);  
+        if (targetChat) {
+          console.log("已找到好友信息：", targetChat);
           activeChat.value = {
-            id: friend.id,           // 保存好友的userId作为聊天对象ID
-            name: friend.name,       // 保存好友名称用于显示
+            id: targetChat.id,           // 保存好友的userId作为聊天对象ID
+            name: targetChat.name,       // 保存好友名称用于显示
             type: 'private',
-            avatar: friend.avatar
+            avatar: targetChat.avatar
           };
         } else {
           console.error("无法找到ID为", chat.id, "的好友");
           activeChat.value = null;
+          messages.value = []; // 清空当前消息显示
           ElMessage.error("无法找到该好友信息");
           return;
         }  
-      } else {  
-        const group = groups.find(g => g.id === chat.id);  
-        if (group) {
-          console.log("已找到群组信息：", group);
-          activeChat.value = { ...group, type: 'group' };
+      } else { // type === 'group' 
+        targetChat = groups.find(g => g.id === chat.id);  
+        if (targetChat) {
+          console.log("已找到群组信息：", targetChat);
+          activeChat.value = { ...targetChat, type: 'group' };
         } else {
           console.error("无法找到ID为", chat.id, "的群组");
           activeChat.value = null;
+          messages.value = []; // 清空当前消息显示
           ElMessage.error("无法找到该群组信息");
           return;
         }  
       }  
-      
-      // 清除未读计数  
-      const chatItem = chatList.find(c => c.id === chat.id && c.type === chat.type);  
-      if (chatItem) {  
-        chatItem.unread = 0;  
+
+      // *** 修改点 4: 更新 messages ref 指向 chatMessages 中对应的数组 ***
+      const chatKey = `${activeChatType.value}-${activeChatId.value}`;
+      if (!chatMessages[chatKey]) {
+        chatMessages[chatKey] = reactive([]); // 如果不存在，初始化为空数组
+        console.log(`为 ${chatKey} 初始化了消息数组`);
+      }
+      messages.value = chatMessages[chatKey]; // 让 messages 指向该聊天的消息数组
+      console.log(`当前消息窗口已切换到 ${chatKey}, 消息数量: ${messages.value.length}`);
+
+      // 清除未读计数 (找到 chatList 中的对应项)
+      const chatListItem = chatList.find(c => c.id === chat.id && c.type === chat.type);  
+      if (chatListItem) {  
+        chatListItem.unread = 0;  
       }  
       
-      // 加载消息历史  
-      loadMessages();  
+      // 不再调用 loadMessages 加载模拟数据
+      // loadMessages(); 
       logEvent('info', `已选择${chat.type === 'private' ? '私聊' : '群聊'}: ${chat.name}`);  
       
+      // 滚动到底部
+      nextTick(() => {  
+        scrollToBottom();  
+      });
+
       // 如果在调试面板，切换回聊天界面  
       debugVisible.value = false;  
     };  
@@ -909,32 +932,39 @@ export default {
       }
       
       const content = messageText.value.trim();  
-      
+      const currentUserId = stompClient.currentUserId.value;
+      const currentUsername = stompClient.currentUser.value;
+      const timestamp = new Date().toISOString();
+      const chatKey = `${activeChatType.value}-${activeChatId.value}`;
+
+      // *** 修改点 6: 创建消息对象并添加到 chatMessages ***
+      const messageData = {
+        id: Date.now(), // 临时 ID
+        content: content,
+        fromUserId: currentUserId,
+        fromUser: currentUsername,
+        timestamp: timestamp,
+        type: 'text' // 假设都是文本
+      };
+
       if (activeChatType.value === 'private') {  
         // 发送私聊消息
         // 使用activeChat.id作为接收者ID
         // 这里的activeChat.id是在selectChat方法中设置的好友userId
         const receiverId = activeChat.value.id;
+        const receiverName = activeChat.value.name;
         console.log(`准备发送私人消息到用户ID: ${receiverId}, 内容: ${content}`);
         
         // 调用WebSocket客户端发送私人消息
         stompClient.sendPrivateMessage(receiverId, content, activeChat.value.name);  
         logEvent('info', `发送私人消息到 ${activeChat.value.name} (ID: ${receiverId}): ${content}`);  
         
-        // 添加到本地消息列表
-        messages.value.push({  
-          id: Date.now(),  
-          content: content,  
-          fromUserId: stompClient.currentUserId.value,  // 自己的ID
-          fromUser: stompClient.currentUser.value,      // 自己的用户名
-          timestamp: new Date().toISOString(),  
-          type: 'text',
-          toUserId: receiverId  // 添加接收者ID
-        });  
+        messageData.toUserId = receiverId; // 添加接收者 ID
       } else if (activeChatType.value === 'group') {  
         // 发送群聊消息
         console.log(`准备发送群组消息到群组ID: ${activeChatId.value}, 内容: ${content}`);
         
+        // *** 修复：将未定义的 groupId 替换为 activeChatId.value ***
         stompClient.sendPublicMessage(content, activeChatId.value);  
         logEvent('info', `发送群组消息到 ${activeChat.value.name}: ${content}`);  
         
@@ -1019,10 +1049,12 @@ export default {
       activeChatId.value = null;  
       activeChatType.value = null;  
       activeChat.value = null;  
-      messages.value = [];  
+      messages.value = []; // 重置当前消息显示
       friends.length = 0;  
       groups.length = 0;  
       chatList.length = 0;  
+      // 清空所有存储的消息
+      Object.keys(chatMessages).forEach(key => delete chatMessages[key]); 
     };  
 
     // 发送测试消息  
@@ -1066,10 +1098,8 @@ export default {
       try {
         const messageData = typeof message === 'string' ? JSON.parse(message) : message;
         
-        // 记录收到的消息
-        logEvent('info', `收到私人消息 来自: ${messageData.fromUser || '未知用户'}`);
+        console.log(`收到私人消息 来自: ${messageData.fromUser || '未知用户'}`);
         
-        // 标准化消息格式
         const formattedMessage = {
           id: Date.now(),
           content: messageData.content,
@@ -1080,31 +1110,42 @@ export default {
           toUserId: messageData.toUserId,
         };
         
-        // 判断当前是否在与发送消息的用户聊天
+        // *** 修复点：确定消息应该存储在哪个 chatMessages key 下 ***
+        // 如果我是发送者，key 基于接收者；如果我是接收者，key 基于发送者
+        const chatPartnerId = messageData.fromUserId === stompClient.currentUserId.value 
+                                ? messageData.toUserId 
+                                : messageData.fromUserId;
+        const chatKey = `private-${chatPartnerId}`;
+
+        // *** 修复点：确保 chatMessages 中存在对应的数组 ***
+        if (!chatMessages[chatKey]) {
+          chatMessages[chatKey] = reactive([]); // 如果不存在，初始化
+          console.log(`为 ${chatKey} 初始化了消息数组（接收消息时）`);
+        }
+        
+        // *** 修复点：总是将消息添加到 chatMessages 对应的数组中 ***
+        chatMessages[chatKey].push(formattedMessage);
+        console.log(`消息已添加到 ${chatKey}，当前数量: ${chatMessages[chatKey].length}`);
+
+        // 判断当前是否在与发送/接收消息的用户聊天
         const isActiveChat = 
           activeChat.value && 
           activeChatType.value === 'private' && 
-          (activeChat.value.id === messageData.fromUserId || activeChat.value.id === messageData.toUserId);
-        
-        // 如果当前正在与发送消息的用户聊天，则添加到消息列表
+          activeChat.value.id === chatPartnerId; // 使用 chatPartnerId 判断是否活跃
+
+        // 如果是活跃聊天，立即滚动到底部 (因为 messages.value 指向的就是 chatMessages[chatKey])
         if (isActiveChat) {
-          messages.value.push(formattedMessage);
-          
-          // 滚动到底部
+          // messages.value.push(formattedMessage); // 不再需要这行，因为 messages.value 引用了 chatMessages[chatKey]
           nextTick(() => {
             scrollToBottom();
           });
         }
         
-        // 更新聊天列表中的最后一条消息信息
+        // 更新聊天列表中的最后一条消息信息 (逻辑保持不变)
         let chatItem;
-        
-        // 查找与消息关联的聊天项(可能是发送者或接收者)
         if (messageData.fromUserId === stompClient.currentUserId.value) {
-          // 当前用户发送的消息
           chatItem = chatList.find(c => c.id === messageData.toUserId && c.type === 'private');
         } else {
-          // 当前用户接收的消息
           chatItem = chatList.find(c => c.id === messageData.fromUserId && c.type === 'private');
         }
         
@@ -1112,13 +1153,20 @@ export default {
           chatItem.lastMessage = messageData.content;
           chatItem.lastTime = formatTime(messageData.timestamp || new Date().toISOString());
           
-          // 如果不是活跃聊天，则增加未读计数
-          if (!isActiveChat) {
+          // 如果不是活跃聊天，则增加未读计数 (且不是自己发的消息)
+          if (!isActiveChat && messageData.fromUserId !== stompClient.currentUserId.value) {
             chatItem.unread = (chatItem.unread || 0) + 1;
           }
+        } else {
+            // 如果聊天列表里还没有这个人 (例如是新朋友的第一条消息)
+            // 需要考虑是否动态添加聊天项到 chatList
+            // 或者依赖于好友列表更新后 updateChatList() 来添加
+            console.warn(`未在 chatList 中找到与 ID ${chatPartnerId} 相关的私聊项`);
+            // 可以在这里触发一次好友列表刷新和 chatList 更新
+            // initFriendsAndGroups(); // 或者更轻量级的更新
         }
         
-        // 显示通知 (根据是否是当前聊天决定是否显示)
+        // 显示通知 (逻辑保持不变)
         if (!isActiveChat && messageData.fromUserId !== stompClient.currentUserId.value) {
           ElMessage({
             message: `${messageData.fromUser || '未知用户'}: ${messageData.content}`,
@@ -1137,10 +1185,8 @@ export default {
       try {
         const messageData = typeof message === 'string' ? JSON.parse(message) : message;
         
-        // 记录收到的消息
         logEvent('info', `收到群聊消息 来自: ${messageData.sender || messageData.fromUser || '未知用户'}`);
         
-        // 标准化消息格式
         const formattedMessage = {
           id: Date.now(),
           content: messageData.content,
@@ -1150,6 +1196,19 @@ export default {
           type: 'group',
           groupId: messageData.groupId
         };
+
+        // *** 修复点：确定消息对应的 chatKey ***
+        const chatKey = `group-${messageData.groupId}`;
+
+        // *** 修复点：确保 chatMessages 中存在对应的数组 ***
+        if (!chatMessages[chatKey]) {
+          chatMessages[chatKey] = reactive([]); // 如果不存在，初始化
+          console.log(`为 ${chatKey} 初始化了消息数组（接收消息时）`);
+        }
+
+        // *** 修复点：总是将消息添加到 chatMessages 对应的数组中 ***
+        chatMessages[chatKey].push(formattedMessage);
+        console.log(`消息已添加到 ${chatKey}，当前数量: ${chatMessages[chatKey].length}`);
         
         // 判断当前是否在查看此消息所属的群聊
         const isActiveChat = 
@@ -1157,17 +1216,15 @@ export default {
           activeChatType.value === 'group' && 
           activeChat.value.id === messageData.groupId;
         
-        // 如果是当前正在查看的群聊，则添加到消息列表
+        // 如果是当前正在查看的群聊，则滚动到底部
         if (isActiveChat) {
-          messages.value.push(formattedMessage);
-          
-          // 滚动到底部
+          // messages.value.push(formattedMessage); // 不再需要，理由同上
           nextTick(() => {
             scrollToBottom();
           });
         }
         
-        // 更新聊天列表中的最后一条消息
+        // 更新聊天列表中的最后一条消息 (逻辑保持不变)
         const chatItem = chatList.find(c => c.id === messageData.groupId && c.type === 'group');
         if (chatItem) {
           chatItem.lastMessage = messageData.content;
@@ -1177,9 +1234,14 @@ export default {
           if (!isActiveChat) {
             chatItem.unread = (chatItem.unread || 0) + 1;
           }
+        } else {
+            // 如果聊天列表里还没有这个群组 (理论上不应该发生，因为群组列表应该先加载)
+            console.warn(`未在 chatList 中找到群组 ID ${messageData.groupId} 对应的项`);
+            // 可以考虑触发一次群组列表刷新
+            // initFriendsAndGroups();
         }
         
-        // 显示通知 (仅在非活跃聊天且不是自己发送的消息时)
+        // 显示通知 (逻辑保持不变)
         const isOwnMessage = formattedMessage.fromUserId === stompClient.currentUserId.value;
         if (!isActiveChat && !isOwnMessage) {
           const groupName = chatItem ? chatItem.name : '群聊';
@@ -1237,8 +1299,14 @@ export default {
     // 滚动到底部  
     const scrollToBottom = () => {  
       if (messageContainer.value) {  
-        messageContainer.value.scrollTop = messageContainer.value.scrollHeight;  
-      }  
+        // 使用 setTimeout 确保 DOM 更新完成
+        setTimeout(() => {
+          messageContainer.value.scrollTop = messageContainer.value.scrollHeight;
+          console.log("尝试滚动到底部", messageContainer.value.scrollHeight);
+        }, 0);
+      } else {
+        console.log("无法滚动，messageContainer 不存在");
+      }
     };  
 
     // 格式化时间  
@@ -1265,15 +1333,16 @@ export default {
 
     // 获取发送者头像  
     const getSenderAvatar = (senderUsername, senderUserId) => {  
-      if (senderUserId === stompClient.currentUserId.value) {  
+      if (senderUserId && senderUserId.toString() === stompClient.currentUserId.value) { // 注意比较
         return userAvatar.value;  
       }  
       
-      const friend = friends.find(f => f.id === senderUserId);  
+      const friend = friends.find(f => f.id && senderUserId && f.id.toString() === senderUserId.toString()); // 注意比较  
       if (friend) {  
         return friend.avatar;  
       }  
       
+      // 如果是群聊，可能需要根据 senderUserId 查找群成员头像，这里简化
       return '/api/placeholder/80/80'; // 默认头像  
     };  
 
@@ -1281,7 +1350,8 @@ export default {
     const showSender = (message, index) => {  
       if (index === 0) return true;  
       const prevMessage = messages.value[index - 1];  
-      return prevMessage.fromUserId !== message.fromUserId;  
+      // 确保 prevMessage 和 message 都有 fromUserId
+      return prevMessage?.fromUserId !== message?.fromUserId;  
     };
 
     const groupManagementDialogVisible = ref(false); // 控制群组管理对话框
@@ -1659,7 +1729,7 @@ export default {
       activeChatId,  
       activeChatType,  
       activeChat,  
-      messages,  
+      messages,  // 现在是当前活动聊天的消息引用
       messageText,  
       searchText,  
       messageContainer,  
@@ -1668,6 +1738,7 @@ export default {
       debugTab,  
       jwt,  
       eventLogs,  
+      // chatMessages, // 不需要直接暴露给模板
       
       // 测试消息相关  
       testMessageType,  
@@ -1818,7 +1889,8 @@ export default {
 .chat-list-container,  
 .contact-list-container,  
 .group-list-container {  
-  height: calc(100vh - 220px);  
+  /* 调整高度计算以适应 sidebar-actions */
+  height: calc(100vh - 260px); /* 示例值，根据实际布局调整 */
   overflow-y: auto;  
   padding: 0 10px;  
 }  
