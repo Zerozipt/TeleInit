@@ -228,7 +228,14 @@ public class ChatServiceImpl implements ChatService {
 
     
     public List<Group_member> getGroupsByUserId(String userId){
-        int id = Integer.parseInt(userId);
-        return groupMemberMapper.selectList(Wrappers.<Group_member>query().eq("user_id", id));
+        try {
+            int id = Integer.parseInt(userId);
+            // 调用新的 Mapper 方法执行 JOIN 查询
+            return groupMemberMapper.findUserGroupsWithNames(id);
+        } catch (NumberFormatException e) {
+            logger.error("Invalid userId format: {}", userId, e);
+            // 或者抛出自定义异常，或者返回空列表，根据你的错误处理策略决定
+            return new ArrayList<>();
+        }
     }
 } 

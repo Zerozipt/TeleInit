@@ -7,6 +7,8 @@ import com.auth0.jwt.exceptions.JWTVerificationException;
 import com.auth0.jwt.interfaces.Claim;
 import com.auth0.jwt.interfaces.DecodedJWT;
 import jakarta.annotation.Resource;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.security.core.GrantedAuthority;
@@ -30,6 +32,9 @@ public class JwtUtils {
 
     @Resource
     StringRedisTemplate template;
+
+    // ★★★ 添加 Logger 实例 ★★★
+    private static final Logger logger = LoggerFactory.getLogger(JwtUtils.class);
 
     /**
      * 使JWT令牌失效。
@@ -79,8 +84,42 @@ public class JwtUtils {
      * @return 令牌是否无效
      */
     private boolean isInvalidToken(String uuid) {
-        // 检查令牌是否已经在黑名单中
-        return Boolean.TRUE.equals(template.hasKey(Const.JWT_BLACK_LIST + uuid));
+        // ★★★ 日志：方法入口和参数 ★★★
+        logger.debug("进入 isInvalidToken 方法，检查 UUID: {}", uuid);
+
+        if (uuid == null) {
+            // ★★★ 日志：处理 null UUID 的情况 ★★★
+            logger.warn("isInvalidToken 方法收到的 UUID 为 null，将视为无效 Token");
+            return true; // 如果 UUID 为 null，通常应视为无效
+        }
+
+        // 构造要检查的 Redis Key
+        String keyToCheck = Const.JWT_BLACK_LIST + uuid;
+        // ★★★ 日志：将要检查的 Redis Key ★★★
+        logger.debug("准备对 Redis 进行黑名单检查，Key: {}", keyToCheck);
+
+        Boolean exists = null; // 用于存储 Redis 操作结果
+        try {
+            // ★★★ 执行 Redis 检查 ★★★
+            exists = template.hasKey(keyToCheck);
+            // ★★★ 日志：Redis 检查的实际结果 ★★★
+            logger.debug("Redis 检查结果 template.hasKey('{}'): {}", keyToCheck, exists);
+
+        } catch (Exception e) {
+            // ★★★ 日志：捕获 Redis 操作可能发生的异常 ★★★
+            logger.error("在检查 Redis Key '{}' 时发生异常", keyToCheck, e);
+            // 在 Redis 异常时，为了安全起见，可以考虑将 Token 视为无效
+            logger.warn("由于 Redis 检查异常，将 Token 视为无效处理");
+            return true;
+        }
+
+        // 根据 Redis 返回结果判断 Token 是否无效
+        // 注意：template.hasKey 可能返回 null (虽然较少见)，所以用 Boolean.TRUE.equals 更安全
+        boolean isInvalid = Boolean.TRUE.equals(exists);
+
+        // ★★★ 日志：方法最终的返回值 ★★★
+        logger.debug("isInvalidToken 方法返回: {}", isInvalid);
+        return isInvalid;
     }
 
     /**

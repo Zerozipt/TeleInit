@@ -11,7 +11,7 @@ public class ConvertUtils {
         Group_message group_message = new Group_message();
         group_message.setGroupId(message.getGroupId());
         group_message.setContent(message.getContent());
-        group_message.setSender_id(message.getSender());
+        group_message.setSender(message.getSender());
         group_message.setCreate_at(message.getTimestamp());
         group_message.setContent_type((short)1);
         group_message.setFile_url(null);

@@ -228,4 +228,28 @@ public class AccountServiceImpl extends ServiceImpl<AccountMapper, Account> impl
     private boolean existsAccountByUsername(String username){
         return this.baseMapper.exists(Wrappers.<Account>query().eq("username",username));
     }
+
+    /**
+     * 根据用户名查找账户信息
+     * @param username 用户名
+     * @return 账户信息，如果找不到则返回 null
+     */
+    @Override // 如果接口里声明了，这里加上 @Override
+    public Account findAccountByUsername(String username) {
+        // 使用 MyBatis-Plus 的查询构造器根据 username 查找
+        return this.query().eq("username", username).one();
+    }
+
+    /**
+     * 根据用户名获取用户ID
+     * @param username 用户名
+     * @return 用户ID (String 类型)，如果找不到则返回 null
+     */
+    @Override // 如果接口里声明了，这里加上 @Override
+    public int findIdByUsername(String username) {
+        // 先调用上面的方法找到 Account 对象
+        Account account = findAccountByUsername(username);
+        // 如果找到了 Account，则返回其 ID (转换为 String)；否则返回 null
+        return (account != null) ? account.getId() : null;
+    }
 }

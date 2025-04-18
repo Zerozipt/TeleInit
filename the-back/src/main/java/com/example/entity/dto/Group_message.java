@@ -8,12 +8,12 @@ import lombok.Data;
 
 @Data
 @TableName("group_messages")
-public class Group_message {
-    private String groupId;
+public class Group_message {  // 类名建议使用大驼峰命名
+    private Long id;         // 添加主键字段
+    private String groupId;   // 使用驼峰命名
     private String content;
-    private String sender_id;
-    //数据库的时间类型是timestamp,对应的java类型是Date
-    private Date create_at;
-    private short content_type;
-    private String file_url;
+    private String Sender;  // 改用驼峰命名
+    private Date Create_at;    // 改用驼峰命名
+    private Short Content_type; // 包装类型更安全
+    private String File_url;
 }

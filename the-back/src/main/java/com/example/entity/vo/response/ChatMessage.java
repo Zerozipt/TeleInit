@@ -23,32 +23,5 @@ public class ChatMessage {
         this.timestamp = new Date();
     }
     
-    // getters 和 setters
-    public MessageType getType() { return type; }
-    public void setType(MessageType type) { this.type = type; }
-    // 其他getter/setter...
-    public String getContent() {
-        return content;
-    }
-    public void setContent(String content) {
-        this.content = content;
-    }
-    public String getSender() {
-        return sender;
-    }
-    public void setSender(String sender) {
-        this.sender = sender;
-    }
-    public String getRoomId() {
-        return roomId;
-    }
-    public void setRoomId(String roomId) {
-        this.roomId = roomId;
-    }
-    public Date getTimestamp() {
-        return timestamp;
-    }
-    public void setTimestamp(Date timestamp) {
-        this.timestamp = timestamp;
-    }
+
 }

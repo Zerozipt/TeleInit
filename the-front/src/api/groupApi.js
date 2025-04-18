@@ -72,20 +72,20 @@ export const createGroup = async (groupName) => {
 
 /**
  * 加入群聊
- * @param {string} groupId 要加入的群聊ID
+ * @param {string} groupName 要加入的群聊名称
  * @returns {Promise<object|null>} 成功时返回成员信息，失败时返回 null
  */
-export const joinGroup = async (groupId) => {
-    if (!groupId || !groupId.trim()) {
-        ElMessage.error('群聊ID不能为空');
+export const joinGroup = async (groupName) => {
+    if (!groupName || !groupName.trim()) {
+        ElMessage.error('群聊名称不能为空');
         return null;
     }
     try {
         // 调用 /api/groups/{groupId}/members 接口
-        const response = await apiClient.post(`/groups/${groupId}/members`);
+        const response = await apiClient.post(`/groups/${groupName}/members`);
         // 假设后端成功时直接返回 Group_member DTO，状态码为 201 或 200
         if (response.status === 201 || response.status === 200) {
-            ElMessage.success(`成功加入群聊 (ID: ${groupId})！`);
+            ElMessage.success(`成功加入群聊 (名称: ${groupName})！`);
             return response.data; // 返回加入的成员信息（虽然可能用处不大，但先返回）
         } else {
             ElMessage.error(`加入群聊失败: ${response.data?.error || '未知错误'}`);

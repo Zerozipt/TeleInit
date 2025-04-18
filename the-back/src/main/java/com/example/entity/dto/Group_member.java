@@ -4,11 +4,14 @@ import com.baomidou.mybatisplus.annotation.TableName;
 
 import lombok.Data;
 
+import java.util.Date;
+
 @Data
 @TableName("group_members")
 public class Group_member {
-    private String user_id;
+    private Integer user_id;
     private String group_id;
-    private String joined_at;
+    private Date joined_at;
     private String role;
+    private String groupname;
 }

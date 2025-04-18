@@ -25,8 +25,8 @@
         </div>
       </template>
       <el-form :model="joinForm" ref="joinFormRef" @submit.prevent="handleJoinGroup">
-        <el-form-item label="群聊 ID" prop="groupId" :rules="[{ required: true, message: '请输入要加入的群聊ID', trigger: 'blur' }]">
-          <el-input v-model="joinForm.groupId" placeholder="输入群聊ID..." clearable></el-input>
+        <el-form-item label="群聊 名称" prop="groupName" :rules="[{ required: true, message: '请输入要加入的群聊名称', trigger: 'blur' }]">
+          <el-input v-model="joinForm.groupName" placeholder="输入群聊名称..." clearable></el-input>
         </el-form-item>
         <el-form-item>
           <el-button type="success" native-type="submit" :loading="joinLoading">加入群聊</el-button>
@@ -54,7 +54,7 @@ const createLoading = ref(false);
 // 加入群聊表单
 const joinFormRef = ref(null);
 const joinForm = reactive({
-  groupId: '',
+  groupName: '',
 });
 const joinLoading = ref(false);
 
@@ -90,13 +90,13 @@ const handleJoinGroup = async () => {
       joinLoading.value = true;
       try {
         // joinGroup 成功时只返回成员信息，我们需要 groupId 通知父组件
-        const joinResult = await joinGroup(joinForm.groupId);
+        const joinResult = await joinGroup(joinForm.groupName);
         if (joinResult) {
           // 触发事件，传递加入的 groupId
           // 后端成功加入后，最好能返回完整的群组信息，方便前端更新
           // 这里暂时只传递 groupId，父组件需要重新获取群组信息
-          emit('group-joined', joinForm.groupId);
-          joinForm.groupId = ''; // 清空输入框
+          emit('group-joined', joinForm.groupName);
+          joinForm.groupName = ''; // 清空输入框
           joinFormRef.value.resetFields(); // 重置表单验证状态
         }
       } finally {

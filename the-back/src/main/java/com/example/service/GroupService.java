@@ -12,7 +12,7 @@ public interface GroupService {
      * @return 创建成功的群组信息
      * @throws RuntimeException 如果创建失败或发生错误
      */
-    Group createGroup(String groupName, String creatorId);
+    Group createGroup(String groupName, int creatorId);
 
     /**
      * 加入群聊
@@ -21,5 +21,5 @@ public interface GroupService {
      * @return 加入成功后的成员信息
      * @throws RuntimeException 如果群聊不存在、用户已在群聊中或发生其他错误
      */
-    Group_member joinGroup(String groupId, String userId);
+    Group_member joinGroup(String groupId, int userId);
 }

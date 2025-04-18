@@ -493,15 +493,15 @@ export default {
       logEvent('info', '初始化好友和群组列表');
       friends.length = 0;
 
-      // 处理好友列表 (这部分逻辑应该没问题)
+      // --- 处理好友列表 (保持不变) ---
       if (Array.isArray(stompClient.friends.value)) {
         stompClient.friends.value.forEach(friendObj => {
           if (friendObj && friendObj.userId && friendObj.username) {
             friends.push({
               id: friendObj.userId,
               name: friendObj.username,
-              avatar: `/api/placeholder/80/80`, // TODO: 获取真实头像
-              online: false, // TODO: 实现真实在线状态
+              avatar: `/api/placeholder/80/80`,
+              online: false,
             });
           }
         });
@@ -510,40 +510,71 @@ export default {
       }
       logEvent('info', `加载了 ${friends.length} 个好友`);
 
+      // --- 处理群组列表 (修改部分) ---
       groups.length = 0; // 清空本地群组列表准备重新填充
 
-      // --- 修正部分：直接使用 stompClient.groups.value ---
-      const groupDataFromClient = stompClient.groups.value; // 获取 websocket.js 中存储的群组数组
-      logEvent('info', `Attempting to process group data from stompClient: ${typeof groupDataFromClient}`); // 增加日志
+      const rawGroupData = stompClient.groups.value; // 获取原始数据 (可能是字符串)
+      let parsedGroupArray = []; // 用于存放解析后的数组
 
-      // 检查 stompClient.groups.value 是否确实是一个数组
-      // websocket.js 中的 getUserInfByJwt 应该已经将 JSON 字符串解析为数组了
-      if (Array.isArray(groupDataFromClient)) {
-        logEvent('info', `Processing ${groupDataFromClient.length} groups from stompClient.`);
-        groupDataFromClient.forEach(groupObj => {
-          // 假设后端返回的群组对象包含 groupId 和 name
-          // 你的 DTO 是 Group { groupId, name, ... }
-          if (groupObj && groupObj.groupId && groupObj.name) {
-            groups.push({
-              id: groupObj.groupId,
-              name: groupObj.name,
-              avatar: `/api/placeholder/80/80`, // TODO: 获取真实头像
-              memberCount: groupObj.memberCount || 0, // TODO: 获取真实成员数 (如果后端返回的话)
-            });
+      logEvent('info', `原始群组数据类型: ${typeof rawGroupData}`);
+      logEvent('debug', `原始群组数据值: ${rawGroupData}`);
+
+      // 检查是否为需要解析的字符串
+      if (typeof rawGroupData === 'string' && rawGroupData.length > 0) {
+        logEvent('info', '尝试将群组数据字符串解析为数组...');
+        try {
+          parsedGroupArray = JSON.parse(rawGroupData);
+          if (!Array.isArray(parsedGroupArray)) {
+            logEvent('warning', `解析后的群组数据不是一个数组! 类型: ${typeof parsedGroupArray}`);
+            console.warn('[ChatApp] Parsed group data is not an array:', parsedGroupArray);
+            parsedGroupArray = [];
           } else {
-            // 如果后端返回的群组对象结构不符合预期，记录警告
-            console.warn('[ChatApp] Received group object with missing fields (groupId or name):', groupObj);
-            // 可以尝试备用字段或给默认值，但最好保证后端返回结构一致
-            const id = groupObj?.groupId || groupObj?.id || `unknown_${groups.length}`;
-            const name = groupObj?.name || `群组 ${id}`;
-            groups.push({ id, name, avatar: '/api/placeholder/80/80', memberCount: 0 });
+            logEvent('info', `成功将群组数据字符串解析为包含 ${parsedGroupArray.length} 个元素的数组.`);
           }
-        });
+        } catch (error) {
+          console.error('[ChatApp] 解析群组数据字符串时出错:', error);
+          logEvent('error', `解析群组 JSON 字符串失败: ${error.message}`);
+          parsedGroupArray = [];
+        }
+      } else if (Array.isArray(rawGroupData)) {
+        logEvent('info', '群组数据已经是数组，直接使用.');
+        parsedGroupArray = rawGroupData;
       } else {
-        // 如果 stompClient.groups.value 不是数组，说明 websocket.js 那边可能出错了
-        console.warn('[ChatApp] stompClient.groups.value is not an array. Value:', groupDataFromClient);
-        logEvent('warning', `Failed to process group data: Expected an array, but got ${typeof groupDataFromClient}`);
+        console.warn('[ChatApp] stompClient.groups.value 不是有效的字符串或数组:', rawGroupData);
+        logEvent('warning', `无效的群组数据类型: ${typeof rawGroupData}`);
       }
+
+      // --- 使用解析后的数组 parsedGroupArray 来填充 groups ---
+      logEvent('info', `开始处理 ${parsedGroupArray.length} 个群组对象...`);
+      parsedGroupArray.forEach((groupObj, index) => {
+        // **修改点：** 不再查找 groupId。使用 index 作为临时 ID (主要用于可能的 UI key)
+        //            并直接使用 groupname。
+
+        // 检查是否存在 groupname
+        if (groupObj && typeof groupObj.groupname !== 'undefined') {
+          groups.push({
+            // *** 使用索引或其他方式生成一个临时 ID (如果需要) ***
+            // 例如，如果 UI 列表需要一个 key，可以用索引或 groupname+index
+            id: `group_${index}`, // 使用索引生成一个简单的临时 ID
+            name: groupObj.groupname, // *** 使用 groupname ***
+            avatar: `/api/placeholder/80/80`,
+            // 你仍然可以从 groupObj 中获取其他信息，比如 role
+            role: groupObj.role, // 假设你想存储角色信息
+            memberCount: groupObj.memberCount || 0, // 如果有成员数信息
+          });
+        } else {
+          // 如果解析出的对象结构不对（例如没有 groupname）
+          console.warn(`[ChatApp] 处理的第 ${index + 1} 个群组对象缺少 groupname 字段:`, groupObj);
+          logEvent('warning', `第 ${index + 1} 个群组对象缺少 groupname，使用默认值。对象: ${JSON.stringify(groupObj)}`);
+          groups.push({
+            id: `group_unknown_${index}`, // 给个不同的临时 ID
+            name: `无效群组 ${index + 1}`, // 使用默认名称
+            avatar: '/api/placeholder/80/80',
+            memberCount: 0,
+          });
+        }
+      });
+
       logEvent('info', `本地群组列表初始化完成，数量: ${groups.length}`);
 
       // 更新聊天列表 (基于更新后的 friends 和 groups)
@@ -1104,14 +1135,14 @@ export default {
     };
 
     // --- 事件处理：群组被加入 ---
-    const onGroupJoined = async (groupId) => {
-      console.log('Event received: group-joined', groupId);
-      logEvent('success', `已成功加入群聊 ID: ${groupId}`);
+    const onGroupJoined = async (groupname) => {
+      console.log('Event received: group-joined', groupname);
+      logEvent('success', `已成功加入群聊 ID: ${groupname}`);
 
       // 1. 检查是否已在本地群组列表中 (避免重复添加)
-      const existingGroup = groups.find(g => g.id === groupId);
+      const existingGroup = groups.find(g => g.name === groupname);
       if (existingGroup) {
-        console.log(`群组 ${groupId} 已存在于本地列表`);
+        console.log(`群组 ${groupname} 已存在于本地列表`);
       } else {
         // 如果本地没有，需要获取群组信息来添加到列表
         // 这里假设重新获取用户信息能解决问题（包含新加入的群）
@@ -1123,7 +1154,7 @@ export default {
 
       // 3. (重要) 重新获取用户信息和订阅
       //    加入群聊后，后端 group_members 表已更新
-      //    调用 getUserInfByJwt 会让后端返回包含新群组的 groupIds
+      //    调用 getUserInfByJwt 会让后端返回包含新群组的 groupname
       //    StompClientWrapper 会根据新的 groupIds 更新 this.groups.value 并重新订阅
       if (jwt.value) {
         console.log("重新获取用户信息以更新群组列表和订阅...");
