@@ -37,7 +37,13 @@
           </div>  
           <div class="status-text">您当前处于离线状态</div>  
           <el-button type="primary" @click="showConnectDialog" size="small">立即连接</el-button>  
-        </div>  
+        </div>
+
+        <!-- 群组管理按钮 (新增) -->
+        <div class="sidebar-actions">
+          <el-button type="primary" plain size="small" @click="showGroupManagementDialog" icon="el-icon-plus" style="width: 48%;">创建群聊</el-button>
+          <el-button type="success" plain size="small" @click="showGroupManagementDialog" icon="el-icon-user" style="width: 48%;">加入群聊</el-button>
+        </div>
 
         <!-- 切换标签 -->  
         <el-tabs v-model="activeTab" class="tab-container">  
@@ -383,17 +389,32 @@
           <el-button type="primary" @click="connect" :disabled="!jwt.trim()">连接</el-button>  
         </div>  
       </template>  
-    </el-dialog>  
+    </el-dialog>
+
+    <!-- 群组管理对话框 (新增) -->
+    <el-dialog
+        title="群组管理"
+        v-model="groupManagementDialogVisible"
+        width="500px"
+        :close-on-click-modal="false">
+      <GroupManagement @group-created="onGroupCreated" @group-joined="onGroupJoined" />
+      <!-- 使用 setup 语法糖，组件会自动导入 -->
+    </el-dialog>
+
   </div>  
 </template>  
 
 <script>  
 import { ref, reactive, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue';  
 import { ElMessage, ElMessageBox } from 'element-plus';  
-import stompClient from '@/net/websocket';  
+import stompClient from '@/net/websocket';
+import GroupManagement from '@/views/GroupManagement.vue'; // 导入群组管理组件
 
 export default {  
-  name: 'ChatApp',  
+  name: 'ChatApp',
+  components: { // 注册组件 (如果不用 setup 语法糖)
+    GroupManagement
+  },
   setup() {  
     // 常量  
     const SOCKET_URL = 'http://localhost:8080/ws-chat'; // 与websocket.js中保持一致  
@@ -465,63 +486,69 @@ export default {
     // 清除日志  
     const clearLogs = () => {  
       eventLogs.value = [];  
-    };  
+    };
 
-    // 初始化好友列表和群组列表  
-    const initFriendsAndGroups = () => {  
-      logEvent('info', '初始化好友和群组列表');  
-      friends.length = 0;  
-      
-      // 检查 stompClient.friends.value 是否为数组
+    // --- 修改 initFriendsAndGroups (修正版) ---
+    const initFriendsAndGroups = () => {
+      logEvent('info', '初始化好友和群组列表');
+      friends.length = 0;
+
+      // 处理好友列表 (这部分逻辑应该没问题)
       if (Array.isArray(stompClient.friends.value)) {
-        stompClient.friends.value.forEach(friendObj => {  
+        stompClient.friends.value.forEach(friendObj => {
           if (friendObj && friendObj.userId && friendObj.username) {
-            friends.push({  
-              id: friendObj.userId,        // 使用userId作为唯一标识
-              name: friendObj.username,    // 显示用的用户名
-              avatar: `/api/placeholder/80/80`,  
-              online: Math.random() > 0.5, // 在线状态可以后续完善
-            });  
+            friends.push({
+              id: friendObj.userId,
+              name: friendObj.username,
+              avatar: `/api/placeholder/80/80`, // TODO: 获取真实头像
+              online: false, // TODO: 实现真实在线状态
+            });
           }
-        });  
-      }
-      logEvent('info', `加载了 ${friends.length} 个好友`);  
-
-      groups.length = 0;  
-      // 检查 stompClient.groups.value 是否为数组
-      if (Array.isArray(stompClient.groups.value)) {
-        stompClient.groups.value.forEach(groupObj => {  
-          // 假设群组对象有 groupId 和 groupName 属性，如果实际不同，需要调整
-          if (groupObj && groupObj.groupId && groupObj.groupName) { 
-            groups.push({  
-              id: groupObj.groupId, // 假设使用 groupId
-              name: groupObj.groupName, // 假设使用 groupName
-              avatar: `/api/placeholder/80/80`, // 保持模拟头像  
-              memberCount: Math.floor(Math.random() * 100) + 5, // 保持模拟成员数  
-            });  
-          } else {
-             // 如果群组数据格式不确定，可以先这样处理或记录日志
-            console.warn('[ChatDebugger] Received group object with potentially missing fields, assuming default structure:', groupObj);
-            // 你也可以尝试使用 groupObj.id 和 groupObj.name (如果后端返回的是这个)
-            // 或者直接使用 groupObj 本身如果只需要 id
-            const groupId = groupObj?.groupId || groupObj?.id || `unknown_group_${groups.length}`;
-            const groupName = groupObj?.groupName || groupObj?.name || `群组 ${groupId}`;
-             groups.push({
-               id: groupId,
-               name: groupName,
-               avatar: `/api/placeholder/80/80`,
-               memberCount: Math.floor(Math.random() * 100) + 5,
-             });
-          }
-        });  
+        });
       } else {
-         console.warn('[ChatDebugger] stompClient.groups.value is not an array:', stompClient.groups.value);
+        console.warn('[ChatApp] stompClient.friends.value is not an array:', stompClient.friends.value);
       }
-      logEvent('info', `加载了 ${groups.length} 个群组`);  
+      logEvent('info', `加载了 ${friends.length} 个好友`);
 
-      // 初始化聊天列表  
-      updateChatList();  
-    };  
+      groups.length = 0; // 清空本地群组列表准备重新填充
+
+      // --- 修正部分：直接使用 stompClient.groups.value ---
+      const groupDataFromClient = stompClient.groups.value; // 获取 websocket.js 中存储的群组数组
+      logEvent('info', `Attempting to process group data from stompClient: ${typeof groupDataFromClient}`); // 增加日志
+
+      // 检查 stompClient.groups.value 是否确实是一个数组
+      // websocket.js 中的 getUserInfByJwt 应该已经将 JSON 字符串解析为数组了
+      if (Array.isArray(groupDataFromClient)) {
+        logEvent('info', `Processing ${groupDataFromClient.length} groups from stompClient.`);
+        groupDataFromClient.forEach(groupObj => {
+          // 假设后端返回的群组对象包含 groupId 和 name
+          // 你的 DTO 是 Group { groupId, name, ... }
+          if (groupObj && groupObj.groupId && groupObj.name) {
+            groups.push({
+              id: groupObj.groupId,
+              name: groupObj.name,
+              avatar: `/api/placeholder/80/80`, // TODO: 获取真实头像
+              memberCount: groupObj.memberCount || 0, // TODO: 获取真实成员数 (如果后端返回的话)
+            });
+          } else {
+            // 如果后端返回的群组对象结构不符合预期，记录警告
+            console.warn('[ChatApp] Received group object with missing fields (groupId or name):', groupObj);
+            // 可以尝试备用字段或给默认值，但最好保证后端返回结构一致
+            const id = groupObj?.groupId || groupObj?.id || `unknown_${groups.length}`;
+            const name = groupObj?.name || `群组 ${id}`;
+            groups.push({ id, name, avatar: '/api/placeholder/80/80', memberCount: 0 });
+          }
+        });
+      } else {
+        // 如果 stompClient.groups.value 不是数组，说明 websocket.js 那边可能出错了
+        console.warn('[ChatApp] stompClient.groups.value is not an array. Value:', groupDataFromClient);
+        logEvent('warning', `Failed to process group data: Expected an array, but got ${typeof groupDataFromClient}`);
+      }
+      logEvent('info', `本地群组列表初始化完成，数量: ${groups.length}`);
+
+      // 更新聊天列表 (基于更新后的 friends 和 groups)
+      updateChatList();
+    };
 
     // 更新聊天列表  
     const updateChatList = () => {  
@@ -1030,7 +1057,92 @@ export default {
       if (index === 0) return true;  
       const prevMessage = messages.value[index - 1];  
       return prevMessage.fromUserId !== message.fromUserId;  
-    };  
+    };
+
+    const groupManagementDialogVisible = ref(false); // 控制群组管理对话框
+
+    // 显示群组管理对话框
+    const showGroupManagementDialog = () => {
+      if (!stompClient.isConnected.value) {
+        ElMessage.warning('请先连接到服务器');
+        return;
+      }
+      groupManagementDialogVisible.value = true;
+    };
+
+    // --- 事件处理：群组被创建 ---
+    const onGroupCreated = (newGroup) => {
+      console.log('Event received: group-created', newGroup);
+      logEvent('success', `新群聊 "${newGroup.name}" 已创建`);
+
+      // 1. 更新本地群组列表 (groups reactive array)
+      //    假设 newGroup 包含 { groupId, name }
+      //    注意：你的 DTO Group 有 groupId 和 name
+      groups.push({
+        id: newGroup.groupId, // 使用 DTO 的 groupId
+        name: newGroup.name,  // 使用 DTO 的 name
+        avatar: `/api/placeholder/80/80`, // 或使用后端返回的头像 URL
+        memberCount: 1, // 新创建的群只有创建者
+      });
+
+      // 2. 更新聊天列表 (chatList reactive array)
+      updateChatList(); // 重新生成 chatList 以包含新群组
+
+      // 3. 关闭对话框
+      groupManagementDialogVisible.value = false;
+
+      // 4. (重要) 通知 StompClient 订阅新群组
+      //    简单方式：重新获取用户信息，这会刷新所有订阅
+      //    更好的方式：在 StompClientWrapper 中添加 subscribeToGroup(groupId) 方法
+      //    这里使用简单方式：
+      if (jwt.value) {
+        console.log("重新获取用户信息以更新订阅...");
+        stompClient.getUserInfByJwt(jwt.value); // 这会重新获取好友/群组并重新订阅
+      } else {
+        console.warn("无法重新获取用户信息，JWT 为空");
+      }
+    };
+
+    // --- 事件处理：群组被加入 ---
+    const onGroupJoined = async (groupId) => {
+      console.log('Event received: group-joined', groupId);
+      logEvent('success', `已成功加入群聊 ID: ${groupId}`);
+
+      // 1. 检查是否已在本地群组列表中 (避免重复添加)
+      const existingGroup = groups.find(g => g.id === groupId);
+      if (existingGroup) {
+        console.log(`群组 ${groupId} 已存在于本地列表`);
+      } else {
+        // 如果本地没有，需要获取群组信息来添加到列表
+        // 这里假设重新获取用户信息能解决问题（包含新加入的群）
+        console.log("群组不在本地列表，准备刷新用户信息...");
+      }
+
+      // 2. 关闭对话框
+      groupManagementDialogVisible.value = false;
+
+      // 3. (重要) 重新获取用户信息和订阅
+      //    加入群聊后，后端 group_members 表已更新
+      //    调用 getUserInfByJwt 会让后端返回包含新群组的 groupIds
+      //    StompClientWrapper 会根据新的 groupIds 更新 this.groups.value 并重新订阅
+      if (jwt.value) {
+        console.log("重新获取用户信息以更新群组列表和订阅...");
+        await stompClient.getUserInfByJwt(jwt.value); // 异步等待完成
+        // 等待用户信息获取完成后，确保本地列表也同步
+        initFriendsAndGroups(); // 用最新的 stompClient.groups.value 更新本地 groups 数组
+      } else {
+        console.warn("无法重新获取用户信息，JWT 为空");
+      }
+    };
+
+    // ★★★ 监听 stompClient.groups 的变化 (当 getUserInfByJwt 更新它时) ★★★
+    // 这个 watch 很重要，确保 websocket.js 中 groups 更新后，ChatApp 的本地 groups 也更新
+    watch(() => stompClient.groups.value, (newGroupsValue) => {
+      console.log("Detected change in stompClient.groups.value, re-initializing local groups...");
+      // 重新初始化本地的好友和群组列表（可能只需要更新群组，但一起更新更简单）
+      initFriendsAndGroups();
+    }, { deep: true }); // 使用 deep watch 以防内部结构变化
+
 
     // 生命周期钩子  
     onMounted(() => {  
@@ -1109,7 +1221,18 @@ export default {
       showSender,  
       generateTestJwt,  
       clearLogs,  
-      sendTestMessage  
+      sendTestMessage,
+
+      // 新增
+      showGroupManagementDialog,
+      groupManagementDialogVisible,
+      onGroupCreated, // 虽然不在模板直接用，但逻辑在此
+      onGroupJoined,  // 虽然不在模板直接用，但逻辑在此
+      initFriendsAndGroups, // 确保返回，因为 watch 中用到
+      updateChatList, // 确保返回，因为 initFriendsAndGroups 中用到
+      logEvent // 确保返回，因为在多个地方用到
+
+
     };  
   }  
 };  
@@ -1579,5 +1702,13 @@ export default {
   display: flex;  
   justify-content: flex-end;  
   margin-top: 10px;  
-}  
+}
+
+/* 新增侧边栏操作按钮样式 */
+.sidebar-actions {
+  padding: 10px 15px;
+  display: flex;
+  justify-content: space-between;
+}
+
 </style>  
