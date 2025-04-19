@@ -4,6 +4,7 @@ import java.util.Date;
 
 @Data
 public class PrivateChatMessage {
+    private Long id;        // 添加id字段
     private String content;
     private String fromUser;   // 发送者
     private String toUser;     // 接收者
@@ -18,6 +19,12 @@ public class PrivateChatMessage {
     }
     
     // getters 和 setters
+    public Long getId() {
+        return id;
+    }
+    public void setId(Long id) {
+        this.id = id;
+    }
     public String getContent() {
         return content;
     }
@@ -53,5 +60,11 @@ public class PrivateChatMessage {
     }
     public void setFromUserId(String fromUserId) {
         this.fromUserId = fromUserId;
+    }
+    public String getToUserId() {
+        return toUserId;
+    }
+    public void setToUserId(String toUserId) {
+        this.toUserId = toUserId;
     }   
 }

@@ -247,9 +247,25 @@ public class AccountServiceImpl extends ServiceImpl<AccountMapper, Account> impl
      */
     @Override // 如果接口里声明了，这里加上 @Override
     public int findIdByUsername(String username) {
-        // 先调用上面的方法找到 Account 对象
-        Account account = findAccountByUsername(username);
-        // 如果找到了 Account，则返回其 ID (转换为 String)；否则返回 null
-        return (account != null) ? account.getId() : null;
+        Account account = this.query()
+                .eq("username", username)
+                .one();
+        return account != null ? account.getId() : 0;
+    }
+
+    @Override
+    public List<Account> searchUsers(String searchTerm) {
+        // 如果搜索词为空，返回空列表
+        if (searchTerm == null || searchTerm.trim().isEmpty()) {
+            return List.of();
+        }
+        
+        // 使用模糊查询搜索用户名包含该词的用户
+        return this.query()
+                .like("username", searchTerm)
+                .or()
+                .like("email", searchTerm)
+                .orderByDesc("id")
+                .list();
     }
 }

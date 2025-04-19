@@ -50,6 +50,7 @@ class StompClientWrapper {
             onError: [],
             onPublicMessage: [],
             onPrivateMessage: [],
+            onFriendRequest: [], // 好友请求事件
         };
     }
 
@@ -335,38 +336,67 @@ class StompClientWrapper {
     }
     
     _subscribeToPrivate() { 
-        const destination = '/user/queue/private'; // 用户需要订阅这个地址来接收私信
-        if (!this.subscriptions[destination] && this.stompClient.value?.connected) {
-            try {
-                console.log(`[StompClientWrapper] 正在订阅私人消息频道 ${destination}，当前用户ID: ${this.currentUserId.value}`);
-                
-                this.subscriptions[destination] = this.stompClient.value.subscribe(destination, (message) => {
-                    try {
-                        console.log('[StompClientWrapper] 收到原始私人消息:', message);
-                        const parsedMessage = JSON.parse(message.body);
-                        console.log('[StompClientWrapper] 解析后的私人消息:', parsedMessage);
-                        
-                        // 确保消息包含必要字段
-                        if (!parsedMessage.fromUserId || !parsedMessage.content) {
-                            console.warn('[StompClientWrapper] 接收到的私人消息缺少必要字段:', parsedMessage);
-                        }
-                        
-                        // 触发消息接收事件
-                        this._trigger('onPrivateMessage', parsedMessage);
-                    } catch (e) {
-                        console.error('[StompClientWrapper] 解析私人消息出错:', e, message.body);
-                    }
-                });
-                
-                console.log(`[StompClientWrapper] 已成功订阅私人消息频道 ${destination}`);
-            } catch(e) {
-                console.error(`[StompClientWrapper] 订阅 ${destination} 失败:`, e);
-                this._trigger('onError', `订阅私人消息频道失败: ${e.message}`);
+        if (!this.stompClient.value || !this.isConnected.value || !this.currentUserId.value) {
+            console.warn('[StompClientWrapper] 无法订阅私人消息：客户端未连接或缺少用户ID');
+            return;
+        }
+
+        try {
+            // 订阅自己的私人消息通道
+            const privateDestination = `/user/${this.currentUserId.value}/queue/messages`;
+            
+            if (this.subscriptions[privateDestination]) {
+                console.log('[StompClientWrapper] 已存在对私人消息的订阅，跳过重复订阅');
+                return;
             }
-        } else if (this.subscriptions[destination]) {
-            console.log(`[StompClientWrapper] 已经订阅了 ${destination}，无需重复订阅`);
-        } else {
-            console.warn(`[StompClientWrapper] 无法订阅 ${destination}，STOMP客户端未连接`);
+            
+            console.log('[StompClientWrapper] 正在订阅私人消息通道:', privateDestination);
+            
+            this.subscriptions[privateDestination] = this.stompClient.value.subscribe(
+                privateDestination,
+                (message) => {
+                    try {
+                        const data = JSON.parse(message.body);
+                        console.log('[StompClientWrapper] 收到私人消息:', data);
+                        this._trigger('onPrivateMessage', data);
+                    } catch (e) {
+                        console.error('[StompClientWrapper] 解析私人消息失败:', e, message.body);
+                    }
+                },
+                { id: `private-sub-${this.currentUserId.value}` }
+            );
+            
+            console.log('[StompClientWrapper] 私人消息通道订阅成功');
+            
+            // 订阅好友请求通道
+            const friendRequestDestination = `/user/${this.currentUserId.value}/queue/friend-requests`;
+            
+            if (this.subscriptions[friendRequestDestination]) {
+                console.log('[StompClientWrapper] 已存在对好友请求的订阅，跳过重复订阅');
+                return;
+            }
+            
+            console.log('[StompClientWrapper] 正在订阅好友请求通道:', friendRequestDestination);
+            
+            this.subscriptions[friendRequestDestination] = this.stompClient.value.subscribe(
+                friendRequestDestination,
+                (message) => {
+                    try {
+                        const data = JSON.parse(message.body);
+                        console.log('[StompClientWrapper] 收到好友请求:', data);
+                        this._trigger('onFriendRequest', data);
+                    } catch (e) {
+                        console.error('[StompClientWrapper] 解析好友请求失败:', e, message.body);
+                    }
+                },
+                { id: `friend-request-sub-${this.currentUserId.value}` }
+            );
+            
+            console.log('[StompClientWrapper] 好友请求通道订阅成功');
+            
+        } catch (error) {
+            console.error('[StompClientWrapper] 订阅私人消息失败:', error);
+            this._trigger('onError', `订阅私人消息失败: ${error.message}`);
         }
     }
 

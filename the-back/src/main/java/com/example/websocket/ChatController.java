@@ -158,24 +158,25 @@ public class ChatController {
              // 可以选择性地通知发送者错误，这里仅记录日志
              return;
         }
-        //将消息发送到私聊队列,进行消息的持久化,先发送到队列，再保存到mysql
-        rabbitTemplate.convertAndSend("privateChat", message);
-        //先将消息保存到redis
-        String key = Const.PRIVATE_CHAT_KEY + (message.getToUserId() != null ? message.getToUserId() : "default");
-        stringRedisTemplate.opsForList().rightPush(key, JSON.toJSONString(message));
-        // 设置过期时间
-        stringRedisTemplate.expire(key, Const.MESSAGE_EXPIRE_DAYS, TimeUnit.DAYS);
         
+        //将消息发送到私聊队列,进行消息的持久化,先发送到队列，再保存到redis
+        rabbitTemplate.convertAndSend("privateChat", message);
+        
+        // 保存消息到Redis
+        // 使用一致的消息键格式，确保发送者和接收者看到相同的历史记录
+        chatService.savePrivateMessage(message);
+        
+        // 发送消息给接收者
         messagingTemplate.convertAndSendToUser(
             message.getToUserId(),
-            "/queue/private", // 客户端需要订阅 /user/queue/private
+            "/queue/messages", // 客户端需要订阅 /user/queue/messages
             message
         );
         
         // 同时将消息发回给发送者，实现聊天记录同步
         messagingTemplate.convertAndSendToUser(
             message.getFromUserId(),
-            "/queue/private",
+            "/queue/messages",
             message
         );
     }
@@ -192,5 +193,105 @@ public class ChatController {
             "heartbeat"
         );
     }
- 
+    
+    /**
+     * 获取私聊消息历史
+     * @param user1 第一个用户名
+     * @param user2 第二个用户名
+     * @param limit 限制返回消息数量，默认50条
+     * @return 包含私聊消息列表的响应
+     */
+    @GetMapping("/history/private")
+    public RestBean<List<PrivateChatMessage>> getPrivateChatHistory(
+            @RequestParam String user1,
+            @RequestParam String user2,
+            @RequestParam(required = false, defaultValue = "50") int limit,
+            @org.springframework.web.bind.annotation.RequestHeader(value = "Authorization", required = false) String authorization) {
+        
+        try {
+            // 验证认证
+            if (authorization == null || !authorization.startsWith("Bearer ")) {
+                return RestBean.failure(401, "用户未认证");
+            }
+            
+            String jwt = authorization.substring(7);
+            DecodedJWT decodedJWT = jwtUtils.resolveJWTFromLocalStorage(jwt);
+            String currentUsername = decodedJWT.getClaim("name").asString();
+            
+            // 安全检查: 只允许查询自己参与的聊天
+            if (!currentUsername.equals(user1) && !currentUsername.equals(user2)) {
+                return RestBean.failure(403, "无权查看其他用户的聊天记录");
+            }
+            
+            // 获取聊天记录
+            List<PrivateChatMessage> chatHistory = chatService.getPrivateChatHistory(user1, user2, limit);
+            return RestBean.success(chatHistory);
+        } catch (Exception e) {
+            e.printStackTrace();
+            return RestBean.failure(500, "获取聊天记录失败: " + e.getMessage());
+        }
+    }
+    
+    /**
+     * 获取群聊消息历史
+     * @param groupId 群组ID
+     * @param limit 限制返回消息数量，默认50条
+     * @return 包含群聊消息列表的响应
+     */
+    @GetMapping("/history/group")
+    public RestBean<List<ChatMessage>> getGroupChatHistory(
+            @RequestParam String groupId,
+            @RequestParam(required = false, defaultValue = "50") int limit,
+            @org.springframework.web.bind.annotation.RequestHeader(value = "Authorization", required = false) String authorization) {
+        
+        try {
+            // 验证认证
+            if (authorization == null || !authorization.startsWith("Bearer ")) {
+                return RestBean.failure(401, "用户未认证");
+            }
+            
+            String jwt = authorization.substring(7);
+            DecodedJWT decodedJWT = jwtUtils.resolveJWTFromLocalStorage(jwt);
+            String userId = decodedJWT.getClaim("id").asString();
+            
+            // 安全检查: 验证用户是群成员
+            List<Group_member> userGroups = chatService.getGroups(userId);
+            boolean isMember = userGroups.stream()
+                    .anyMatch(group -> group.getGroup_id().equals(groupId));
+            
+            if (!isMember) {
+                return RestBean.failure(403, "非群成员无法查看群聊记录");
+            }
+            
+            // 获取聊天记录
+            List<ChatMessage> chatHistory = chatService.getGroupChatHistory(groupId, limit);
+            return RestBean.success(chatHistory);
+        } catch (Exception e) {
+            e.printStackTrace();
+            return RestBean.failure(500, "获取群聊记录失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 获取私聊消息历史（与前端路径完全匹配）
+     */
+    @GetMapping("/chat/history/private")
+    public RestBean<List<PrivateChatMessage>> getPrivateChatHistoryCompatible(
+            @RequestParam String user1,
+            @RequestParam String user2,
+            @RequestParam(required = false, defaultValue = "50") int limit,
+            @org.springframework.web.bind.annotation.RequestHeader(value = "Authorization", required = false) String authorization) {
+        return getPrivateChatHistory(user1, user2, limit, authorization);
+    }
+    
+    /**
+     * 获取群聊消息历史（与前端路径完全匹配）
+     */
+    @GetMapping("/chat/history/group")
+    public RestBean<List<ChatMessage>> getGroupChatHistoryCompatible(
+            @RequestParam String groupId,
+            @RequestParam(required = false, defaultValue = "50") int limit,
+            @org.springframework.web.bind.annotation.RequestHeader(value = "Authorization", required = false) String authorization) {
+        return getGroupChatHistory(groupId, limit, authorization);
+    }
 }

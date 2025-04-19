@@ -21,8 +21,20 @@ public class PrivateChatMessageListener {
 
     @RabbitHandler
     public void receiveMessage(PrivateChatMessage message) {
-        // 将消息保存到数据库 调用server中的方法
-       System.out.println("收到私聊消息：" + message);
-
+        // 将消息保存到数据库
+        System.out.println("收到私聊消息：" + message);
+        
+        try {
+            // 调用服务层方法保存消息
+            boolean saved = chatService.savePrivateMessage(message);
+            if (saved) {
+                System.out.println("私聊消息成功保存到数据库: " + message.getContent());
+            } else {
+                System.err.println("私聊消息保存失败");
+            }
+        } catch (Exception e) {
+            System.err.println("处理私聊消息时发生错误: " + e.getMessage());
+            e.printStackTrace();
+        }
     }
 }

@@ -66,8 +66,48 @@
             </div>  
           </el-tab-pane>  
           <el-tab-pane label="联系人" name="contacts">  
-            <div class="contact-list-container">  
-              <div v-for="(friend, index) in filteredFriends" :key="index"   
+            <div class="contact-list-container">
+              <!-- 添加好友按钮 -->
+              <div class="add-friend-button">
+                <el-button 
+                  type="primary" 
+                  plain 
+                  size="small" 
+                  @click="showAddFriendDialog" 
+                  :disabled="!stompClient.isConnected.value"
+                  :icon="Plus">
+                  添加好友
+                </el-button>
+              </div>
+
+              <!-- 好友请求列表 -->
+              <div v-if="friendRequests.length > 0" class="friend-requests-section">
+                <div class="section-title">好友请求 ({{friendRequests.length}})</div>
+                <div v-for="request in friendRequests" :key="request.id" class="friend-request-item">
+                  <el-avatar :size="40" :src="request.avatarUrl || '/api/placeholder/80/80'"></el-avatar>
+                  <div class="friend-request-info">
+                    <div class="friend-request-name">{{ request.fromUsername }}</div>
+                    <div class="friend-request-time">{{ formatTime(request.createTime) }}</div>
+                  </div>
+                  <div class="friend-request-actions">
+                    <el-button 
+                      type="success" 
+                      size="small" 
+                      @click="handleAcceptFriendRequest(request)" 
+                      :loading="request.loading">接受</el-button>
+                    <el-button 
+                      type="danger" 
+                      size="small" 
+                      @click="handleRejectFriendRequest(request)" 
+                      :loading="request.loading">拒绝</el-button>
+                  </div>
+                </div>
+              </div>
+              
+              <!-- 好友列表 -->
+              <div class="section-title">我的好友 ({{friends.length}})</div>
+              <div v-for="(friend, index) in filteredFriends" 
+                   :key="friend.id || index"   
                    class="contact-item"  
                    :class="{ 'active': activeChatId === friend.id && activeChatType === 'private' }"  
                    @click="selectChat({id: friend.id, name: friend.name, type: 'private'})">  
@@ -77,7 +117,7 @@
                   <div class="contact-status">{{ friend.online ? '在线' : '离线' }}</div>  
                 </div>  
               </div>  
-            </div>  
+            </div>
           </el-tab-pane>  
           <el-tab-pane label="群组" name="groups">  
             <div class="group-list-container">  
@@ -189,6 +229,47 @@
               </div>  
             </div>  
           </el-tab-pane>  
+          <el-tab-pane label="好友请求" name="friendRequests">
+            <div class="debug-section">
+              <h3>好友请求列表</h3>
+              <div class="action-bar">
+                <el-button type="primary" size="small" @click="fetchFriendRequests" :disabled="!stompClient.isConnected.value">
+                  <i class="el-icon-refresh"></i> 刷新请求列表
+                </el-button>
+              </div>
+              
+              <el-empty v-if="friendRequests.length === 0" description="暂无好友请求" :image-size="100"></el-empty>
+              
+              <el-table v-else :data="friendRequests" stripe style="width: 100%; margin-top: 15px;">
+                <el-table-column prop="id" label="请求ID" width="80"></el-table-column>
+                <el-table-column prop="fromUsername" label="发送者"></el-table-column>
+                <el-table-column prop="createTime" label="发送时间">
+                  <template #default="scope">
+                    {{ formatTime(scope.row.createTime) }}
+                  </template>
+                </el-table-column>
+                <el-table-column label="操作" width="180">
+                  <template #default="scope">
+                    <el-button
+                      type="success"
+                      size="small"
+                      @click="handleAcceptFriendRequest(scope.row)"
+                      :loading="scope.row.loading">
+                      接受
+                    </el-button>
+                    <el-button
+                      type="danger"
+                      size="small"
+                      @click="handleRejectFriendRequest(scope.row)"
+                      :loading="scope.row.loading">
+                      拒绝
+                    </el-button>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </div>
+          </el-tab-pane>
+          
           <el-tab-pane label="好友列表" name="friends">  
             <div class="debug-section">  
               <h3>好友列表</h3>  
@@ -401,14 +482,72 @@
       <!-- 使用 setup 语法糖，组件会自动导入 -->
     </el-dialog>
 
+    <!-- 添加好友弹窗 -->
+    <el-dialog
+      title="添加好友"
+      v-model="addFriendDialogVisible"
+      width="30%"
+      :before-close="handleAddFriendDialogClose">
+      <div class="search-section">
+        <el-input 
+          v-model="searchQuery" 
+          placeholder="输入用户名搜索"
+          :prefix-icon="Search"
+          @input="handleSearch"
+          clearable>
+        </el-input>
+      </div>
+
+      <!-- 搜索结果列表 -->
+      <div v-if="searchResults.length > 0" class="search-results">
+        <div v-for="user in searchResults" :key="user.id" class="search-result-item">
+          <el-avatar :size="40" :src="user.avatar || '/api/placeholder/80/80'"></el-avatar>
+          <div class="user-info">
+            <div class="username">{{ user.username }}</div>
+            <div class="user-id">ID: {{ user.id }}</div>
+          </div>
+          <el-button 
+            type="primary" 
+            size="small" 
+            @click="handleAddFriend(user.id)"
+            :loading="user.loading"
+            :disabled="user.isAlreadyFriend">
+            {{ user.isAlreadyFriend ? '已是好友' : '添加好友' }}
+          </el-button>
+        </div>
+      </div>
+
+      <!-- 无搜索结果提示 -->
+      <el-empty 
+        v-else-if="searchQuery && !isSearching" 
+        description="未找到匹配的用户" 
+        :image-size="100">
+      </el-empty>
+
+      <!-- 初始提示 -->
+      <div v-else-if="!searchQuery" class="search-tip">
+        输入用户名以搜索用户
+      </div>
+
+      <!-- 加载中状态 -->
+      <div v-else-if="isSearching" class="loading-state">
+        <el-icon class="is-loading"><Loading /></el-icon>
+        正在搜索...
+      </div>
+    </el-dialog>
+
   </div>  
 </template>  
 
 <script>  
-import { ref, reactive, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue';  
+import { ref, reactive, computed, onMounted, onBeforeUnmount, nextTick, watch, onUnmounted } from 'vue';  
 import { ElMessage, ElMessageBox } from 'element-plus';  
 import stompClient from '@/net/websocket';
 import GroupManagement from '@/views/GroupManagement.vue'; // 导入群组管理组件
+import { generateTestJwt } from '../utils/jwt';
+import { addFriend, getFriendRequests, acceptFriendRequest, rejectFriendRequest, searchUsers } from '../api/friendApi';
+import { Plus, Search, Loading } from '@element-plus/icons-vue'
+import { getPrivateChatHistory, getGroupChatHistory } from '../api/chatApi';
 
 export default {  
   name: 'ChatApp',
@@ -685,37 +824,74 @@ export default {
       debugVisible.value = false;  
     };  
 
-    // 加载消息（模拟）  
-    const loadMessages = () => {  
-      messages.value = []; // 清空现有消息  
+    // 加载消息历史
+    const loadMessages = async () => {  
+      if (!activeChat.value) return;
+
+      messages.value = []; // 清空现有消息 
+      logEvent('info', `正在加载${activeChatType.value === 'private' ? '私聊' : '群聊'}历史消息...`);
       
-      // 在实际应用中，这里应该调用API获取消息历史  
-      // 现在使用模拟数据  
-      if (activeChat.value) {  
-        const mockMessages = [];  
-        const now = new Date();  
+      try {
+        let chatHistory = [];
         
-        for (let i = 0; i < 10; i++) {  
-          const time = new Date(now.getTime() - (10 - i) * 60000);  
-          mockMessages.push({  
-            id: i,  
-            content: `这是一条测试消息 ${i + 1}`,  
-            fromUserId: i % 3 === 0 ? stompClient.currentUserId.value : activeChat.value.id,  
-            fromUser: i % 3 === 0 ? stompClient.currentUser.value : activeChat.value.name,  
-            timestamp: time.toISOString(),  
-            type: 'text'  
-          });  
-        }  
+        if (activeChatType.value === 'private') {
+          // 获取私聊历史
+          chatHistory = await getPrivateChatHistory(
+            stompClient.currentUser.value, 
+            activeChat.value.name,
+            50
+          );
+        } else {
+          // 获取群聊历史
+          chatHistory = await getGroupChatHistory(
+            activeChatId.value,
+            50
+          );
+        }
         
-        messages.value = mockMessages;  
-        logEvent('info', `已加载 ${mockMessages.length} 条消息历史`);  
+        // 转换消息格式为前端统一格式
+        messages.value = chatHistory.map(msg => ({
+          id: msg.id || Date.now(),
+          content: msg.content,
+          fromUserId: msg.fromUserId || msg.senderId,
+          fromUser: msg.fromUser || msg.sender,
+          timestamp: msg.timestamp,
+          type: activeChatType.value
+        }));
+        
+        logEvent('success', `已加载 ${messages.value.length} 条消息历史`);
         
         // 滚动到底部  
         nextTick(() => {  
           scrollToBottom();  
-        });  
-      }  
-    };  
+        });
+      } catch (error) {
+        console.error('加载消息历史失败:', error);
+        ElMessage.error(`加载消息历史失败: ${error.message}`);
+        logEvent('error', `加载消息历史失败: ${error.message}`);
+        
+        // 加载失败时使用模拟数据以避免空白界面
+        if (activeChat.value) {
+          const mockMessages = [];
+          const now = new Date();
+          
+          // 仅生成几个模拟消息作为备用
+          for (let i = 0; i < 3; i++) {
+            const time = new Date(now.getTime() - (3 - i) * 60000);
+            mockMessages.push({
+              id: i,
+              content: `[模拟消息 ${i + 1}] 加载历史消息失败，这是备用显示`,
+              fromUserId: stompClient.currentUserId.value,
+              fromUser: stompClient.currentUser.value,
+              timestamp: time.toISOString(),
+              type: 'text'
+            });
+          }
+          
+          messages.value = mockMessages;
+        }
+      }
+    };
 
     // 发送消息  
     const sendMessage = () => {  
@@ -735,13 +911,14 @@ export default {
       const content = messageText.value.trim();  
       
       if (activeChatType.value === 'private') {  
+        // 发送私聊消息
         // 使用activeChat.id作为接收者ID
         // 这里的activeChat.id是在selectChat方法中设置的好友userId
         const receiverId = activeChat.value.id;
         console.log(`准备发送私人消息到用户ID: ${receiverId}, 内容: ${content}`);
         
         // 调用WebSocket客户端发送私人消息
-        stompClient.sendPrivateMessage(receiverId, content,activeChat.value.name);  
+        stompClient.sendPrivateMessage(receiverId, content, activeChat.value.name);  
         logEvent('info', `发送私人消息到 ${activeChat.value.name} (ID: ${receiverId}): ${content}`);  
         
         // 添加到本地消息列表
@@ -755,27 +932,28 @@ export default {
           toUserId: receiverId  // 添加接收者ID
         });  
       } else if (activeChatType.value === 'group') {  
+        // 发送群聊消息
         console.log(`准备发送群组消息到群组ID: ${activeChatId.value}, 内容: ${content}`);
         
         stompClient.sendPublicMessage(content, activeChatId.value);  
         logEvent('info', `发送群组消息到 ${activeChat.value.name}: ${content}`);  
         
-        // 添加到本地消息列表  
+        // 添加到本地消息列表，即时更新UI
         messages.value.push({  
           id: Date.now(),  
           content: content,  
           fromUserId: stompClient.currentUserId.value,  
           fromUser: stompClient.currentUser.value,  
           timestamp: new Date().toISOString(),  
-          type: 'text',
+          type: 'group', // 这里将类型标记为群组消息
           groupId: activeChatId.value
-        });  
+        });
       }  
       
       // 更新聊天列表中的最后一条消息  
       const chatItem = chatList.find(c => c.id === activeChatId.value && c.type === activeChatType.value);  
       if (chatItem) {  
-        chatItem.lastMessage = content;  
+        chatItem.lastMessage = content;
         chatItem.lastTime = formatTime(new Date().toISOString());  
       }  
       
@@ -883,162 +1061,178 @@ export default {
       testMessage.value = '';  
     };  
 
-    // 处理接收到的私人消息  
-    const handlePrivateMessage = (message) => {  
-      console.log("收到私人消息:", message);
-      
-      const senderUserId = message.fromUserId;  // 发送者ID
-      const senderUsername = message.fromUser;  // 发送者用户名
-      const receiverUserId = message.toUserId;  // 接收者ID
-      const content = message.content;          // 消息内容
-      const currentUserId = stompClient.currentUserId.value;  // 当前用户ID
-      const messageTimestamp = message.timestamp || new Date().toISOString();
-
-      logEvent('info', `收到私人消息 - 发送者: ${senderUsername} (ID: ${senderUserId}), 接收者ID: ${receiverUserId}, 内容: ${content.substring(0, 20)}...`);  
-
-      // 确定是否显示在当前聊天窗口中
-      // 情况1：如果当前用户是发送者，且当前聊天对象是接收者
-      // 情况2：如果当前用户是接收者，且当前聊天对象是发送者
-      const isCurrentUserSender = currentUserId === senderUserId;
-      const isCurrentUserReceiver = currentUserId === receiverUserId;
-      
-      // 确定要与哪个用户的聊天窗口关联此消息
-      let targetUserId;
-      
-      if (isCurrentUserSender) {
-        // 如果当前用户是发送者，应该在与接收者的聊天中显示
-        targetUserId = receiverUserId;
-        console.log("当前用户是发送者，消息应该显示在与接收者的聊天中, 目标用户ID:", targetUserId);
+    // 处理私人消息
+    const handlePrivateMessage = (message) => {
+      try {
+        const messageData = typeof message === 'string' ? JSON.parse(message) : message;
         
-        // ★★★ 重要修复点 ★★★
-        // 如果当前用户是发送者，检查这条消息是否已经在消息列表中
-        // 这是为了避免将自己发送的消息显示两次（一次是发送时添加，一次是服务器回传时添加）
-        const isMessageAlreadyAdded = messages.value.some(msg => 
-          msg.content === content && 
-          msg.fromUserId === senderUserId && 
-          msg.toUserId === receiverUserId &&
-          // 时间戳可能不完全一样，设置一个合理的时间窗口(5秒)来判断是否是同一条消息
-          Math.abs(new Date(msg.timestamp) - new Date(messageTimestamp)) < 5000
-        );
+        // 记录收到的消息
+        logEvent('info', `收到私人消息 来自: ${messageData.fromUser || '未知用户'}`);
         
-        if (isMessageAlreadyAdded) {
-          console.log("检测到重复消息，忽略此消息");
+        // 标准化消息格式
+        const formattedMessage = {
+          id: Date.now(),
+          content: messageData.content,
+          fromUserId: messageData.fromUserId,
+          fromUser: messageData.fromUser,
+          timestamp: messageData.timestamp || new Date().toISOString(),
+          type: 'private',
+          toUserId: messageData.toUserId,
+        };
+        
+        // 判断当前是否在与发送消息的用户聊天
+        const isActiveChat = 
+          activeChat.value && 
+          activeChatType.value === 'private' && 
+          (activeChat.value.id === messageData.fromUserId || activeChat.value.id === messageData.toUserId);
+        
+        // 如果当前正在与发送消息的用户聊天，则添加到消息列表
+        if (isActiveChat) {
+          messages.value.push(formattedMessage);
           
-          // 仍然更新聊天列表的最后一条消息信息
-          updateChatListItem(targetUserId, content, messageTimestamp);
-          return; // 不再继续处理这条消息
+          // 滚动到底部
+          nextTick(() => {
+            scrollToBottom();
+          });
         }
-      } else if (isCurrentUserReceiver) {
-        // 如果当前用户是接收者，应该在与发送者的聊天中显示
-        targetUserId = senderUserId;
-        console.log("当前用户是接收者，消息应该显示在与发送者的聊天中, 目标用户ID:", targetUserId);
-      } else {
-        console.warn("收到的消息与当前用户无关, 忽略此消息");
-        return;  // 如果既不是发送者也不是接收者，忽略此消息
-      }
-      
-      // 检查是否是当前活跃的聊天窗口
-      const isActiveChat = activeChatType.value === 'private' && activeChatId.value === targetUserId;
-      
-      if (isActiveChat) {
-        console.log("消息将显示在当前活跃的聊天窗口中");
-        // 将消息添加到当前聊天窗口
-        messages.value.push({  
-          id: Date.now(),  
-          content: content,
-          fromUserId: senderUserId,   // 保持原始发送者ID
-          fromUser: senderUsername,   // 保持原始发送者用户名
-          timestamp: messageTimestamp,  
-          type: 'text',
-          toUserId: receiverUserId    // 保持原始接收者ID
-        });  
-
-        nextTick(() => {  
-          scrollToBottom();  
-        });  
-      } else {
-        console.log("消息不在当前活跃的聊天窗口中，将更新聊天列表");
-      }
-
-      // 封装更新聊天列表项的功能为单独函数
-      updateChatListItem(targetUserId, content, messageTimestamp);
-    };
-
-    // 辅助函数：更新聊天列表项
-    const updateChatListItem = (targetUserId, content, timestamp) => {
-      // 更新或创建聊天列表项
-      let chatItem = chatList.find(c => c.id === targetUserId && c.type === 'private');  
-      
-      if (chatItem) {  
-        // 更新现有聊天项
-        chatItem.lastMessage = content;  
-        chatItem.lastTime = formatTime(timestamp);  
         
-        // 如果是接收消息且不是当前活跃聊天，增加未读计数
-        const isActiveChat = activeChatType.value === 'private' && activeChatId.value === targetUserId;
-        const isCurrentUserReceiver = stompClient.currentUserId.value !== targetUserId;
+        // 更新聊天列表中的最后一条消息信息
+        let chatItem;
         
-        if (isCurrentUserReceiver && !isActiveChat) {  
-          chatItem.unread = (chatItem.unread || 0) + 1;
-          console.log(`未读消息数增加为: ${chatItem.unread}`);
-        }  
-      } else {  
-        // 聊天项不存在，需要创建新的聊天项
-        // 查找目标用户的信息
-        console.log("聊天项不存在，创建新的聊天项, 查找用户ID:", targetUserId);
-        const targetUser = friends.find(f => f.id === targetUserId);
-        
-        if (targetUser) {
-          console.log("找到目标用户信息:", targetUser);
-          const newChatItem = {  
-            id: targetUserId,  
-            name: targetUser.name,  
-            avatar: targetUser.avatar || '/avatar/default.png',  
-            type: 'private',  
-            lastMessage: content,  
-            lastTime: formatTime(timestamp),  
-            unread: stompClient.currentUserId.value !== targetUserId ? 1 : 0  // 只有当前用户是接收者时设置未读
-          };
-          
-          chatList.push(newChatItem);
-          console.log("已创建新的聊天项:", newChatItem);
+        // 查找与消息关联的聊天项(可能是发送者或接收者)
+        if (messageData.fromUserId === stompClient.currentUserId.value) {
+          // 当前用户发送的消息
+          chatItem = chatList.find(c => c.id === messageData.toUserId && c.type === 'private');
         } else {
-          console.error("找不到ID为", targetUserId, "的好友信息，无法创建聊天项");
+          // 当前用户接收的消息
+          chatItem = chatList.find(c => c.id === messageData.fromUserId && c.type === 'private');
         }
-      }  
+        
+        if (chatItem) {
+          chatItem.lastMessage = messageData.content;
+          chatItem.lastTime = formatTime(messageData.timestamp || new Date().toISOString());
+          
+          // 如果不是活跃聊天，则增加未读计数
+          if (!isActiveChat) {
+            chatItem.unread = (chatItem.unread || 0) + 1;
+          }
+        }
+        
+        // 显示通知 (根据是否是当前聊天决定是否显示)
+        if (!isActiveChat && messageData.fromUserId !== stompClient.currentUserId.value) {
+          ElMessage({
+            message: `${messageData.fromUser || '未知用户'}: ${messageData.content}`,
+            type: 'success',
+            duration: 3000
+          });
+        }
+      } catch (error) {
+        console.error('处理私人消息出错:', error);
+        logEvent('error', `处理私人消息出错: ${error.message}`);
+      }
     };
 
-    // 处理接收到的公共消息  
-    const handlePublicMessage = (message) => {  
-      logEvent('info', `收到群组消息，发送者: ${message.sender}，群组: ${message.groupId}`);  
-      
-      // 检查是否是当前聊天  
-      if (activeChatType.value === 'group' && activeChatId.value === message.groupId) {  
-        messages.value.push({  
-          id: Date.now(),  
-          content: message.content,  
-          fromUserId: message.sender,  
-          fromUser: message.sender,  
-          timestamp: message.timestamp,  
-          type: 'text'  
-        });  
+    // 处理公共消息
+    const handlePublicMessage = (message) => {
+      try {
+        const messageData = typeof message === 'string' ? JSON.parse(message) : message;
         
-        nextTick(() => {  
-          scrollToBottom();  
-        });  
-      }  
+        // 记录收到的消息
+        logEvent('info', `收到群聊消息 来自: ${messageData.sender || messageData.fromUser || '未知用户'}`);
+        
+        // 标准化消息格式
+        const formattedMessage = {
+          id: Date.now(),
+          content: messageData.content,
+          fromUserId: messageData.senderId || messageData.fromUserId,
+          fromUser: messageData.sender || messageData.fromUser,
+          timestamp: messageData.timestamp || new Date().toISOString(),
+          type: 'group',
+          groupId: messageData.groupId
+        };
+        
+        // 判断当前是否在查看此消息所属的群聊
+        const isActiveChat = 
+          activeChat.value && 
+          activeChatType.value === 'group' && 
+          activeChat.value.id === messageData.groupId;
+        
+        // 如果是当前正在查看的群聊，则添加到消息列表
+        if (isActiveChat) {
+          messages.value.push(formattedMessage);
+          
+          // 滚动到底部
+          nextTick(() => {
+            scrollToBottom();
+          });
+        }
+        
+        // 更新聊天列表中的最后一条消息
+        const chatItem = chatList.find(c => c.id === messageData.groupId && c.type === 'group');
+        if (chatItem) {
+          chatItem.lastMessage = messageData.content;
+          chatItem.lastTime = formatTime(messageData.timestamp || new Date().toISOString());
+          
+          // 如果不是活跃聊天，则增加未读计数
+          if (!isActiveChat) {
+            chatItem.unread = (chatItem.unread || 0) + 1;
+          }
+        }
+        
+        // 显示通知 (仅在非活跃聊天且不是自己发送的消息时)
+        const isOwnMessage = formattedMessage.fromUserId === stompClient.currentUserId.value;
+        if (!isActiveChat && !isOwnMessage) {
+          const groupName = chatItem ? chatItem.name : '群聊';
+          ElMessage({
+            message: `[${groupName}] ${formattedMessage.fromUser}: ${formattedMessage.content}`,
+            type: 'info',
+            duration: 3000
+          });
+        }
+      } catch (error) {
+        console.error('处理群聊消息出错:', error);
+        logEvent('error', `处理群聊消息出错: ${error.message}`);
+      }
+    };
+
+    // 获取好友请求列表
+    const fetchFriendRequests = async () => {
+      if (!stompClient.isConnected.value) {
+        ElMessage.warning('WebSocket未连接，无法获取好友请求');
+        return;
+      }
       
-      // 更新聊天列表  
-      const chatItem = chatList.find(c => c.id === message.groupId && c.type === 'group');  
-      if (chatItem) {  
-        chatItem.lastMessage = message.content;  
-        chatItem.lastTime = formatTime(message.timestamp);  
-        // 如果不是当前聊天，增加未读计数  
-        if (!(activeChatType.value === 'group' && activeChatId.value === message.groupId)) {  
-          chatItem.unread++;  
-        }  
-      }  
-    };  
+      try {
+        const response = await fetch(`${serverUrl.value}/api/user/friend-requests`, {
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${localStorage.getItem('token')}`
+          }
+        });
+        
+        if (!response.ok) {
+          throw new Error(`获取好友请求失败: ${response.status}`);
+        }
+        
+        const data = await response.json();
+        const requestsData = Array.isArray(data) ? data : (data.data || []);
+        
+        if (!Array.isArray(requestsData)) {
+          console.error('获取到的好友请求数据不是数组:', requestsData);
+          friendRequests.value = [];
+          return;
+        }
+        
+        friendRequests.value = requestsData;
+        
+        logEvent('info', `已加载 ${friendRequests.value.length} 个好友请求`);
+      } catch (error) {
+        console.error('获取好友请求出错:', error);
+        ElMessage.error(`获取好友请求出错: ${error.message}`);
+        logEvent('error', `获取好友请求出错: ${error.message}`);
+        friendRequests.value = [];
+      }
+    };
 
     // 滚动到底部  
     const scrollToBottom = () => {  
@@ -1174,27 +1368,84 @@ export default {
       initFriendsAndGroups();
     }, { deep: true }); // 使用 deep watch 以防内部结构变化
 
+    // 添加好友相关
+    const addFriendDialogVisible = ref(false);
+    const addFriendForm = ref({
+      username: ''
+    });
+    const loading = ref(false)
+
+    const showAddFriendDialog = () => {
+      if (!stompClient.isConnected.value) {
+        ElMessage.warning('请先连接服务器')
+        return
+      }
+      addFriendDialogVisible.value = true
+    }
+
+    const handleAddFriendDialogClose = () => {
+      addFriendForm.value.username = ''
+      addFriendDialogVisible.value = false
+      loading.value = false
+    }
+
+    const handleAddFriend = async (targetUserId) => {
+      if (!targetUserId) {
+        ElMessage.warning('目标用户ID无效');
+        return;
+      }
+      
+      // 查找用户对象
+      const user = searchResults.value.find(u => u && u.id === targetUserId);
+      if (!user) {
+        ElMessage.warning('未找到指定用户');
+        return;
+      }
+      
+      if (user.loading || user.isAlreadyFriend) return;
+      
+      user.loading = true;
+      try {
+        await addFriend(targetUserId);
+        ElMessage.success('好友请求已发送');
+        // 标记为已发送请求
+        user.isAlreadyFriend = true;
+      } catch (error) {
+        console.error('添加好友失败:', error);
+        ElMessage.error('添加好友失败：' + error.message);
+      } finally {
+        user.loading = false;
+      }
+    };
 
     // 生命周期钩子  
-    onMounted(() => {  
-      // 注册消息事件处理  
-      stompClient.on('onPrivateMessage', handlePrivateMessage);  
-      stompClient.on('onPublicMessage', handlePublicMessage);  
-      stompClient.on('onConnected', (username) => {  
-        logEvent('success', `WebSocket连接成功，用户名: ${username}`);  
-        initFriendsAndGroups();  
-      });  
-      stompClient.on('onDisconnected', () => {  
-        logEvent('info', 'WebSocket连接已断开');  
-      });  
-      stompClient.on('onError', (error) => {  
-        logEvent('error', `WebSocket错误: ${error}`);  
-        ElMessage.error(`发生错误: ${error}`);  
-      });  
+    onMounted(async () => {
+      serverUrl.value = localStorage.getItem('serverUrl') || 'http://localhost:8080';
       
-      // 添加初始日志  
-      logEvent('info', '聊天应用已初始化，等待连接...');  
-    });  
+      try {
+        // 连接到WebSocket
+        await stompClient.connect(serverUrl.value);
+        
+        if (stompClient.isConnected.value) {
+          ElMessage.success('WebSocket连接成功');
+          logEvent('success', 'WebSocket连接成功');
+          
+          // 订阅消息
+          await subscribeToMessages();
+          
+          // 获取好友列表和好友请求
+          await fetchFriends();
+          await fetchFriendRequests();
+        } else {
+          ElMessage.warning('WebSocket连接失败，请检查服务器状态');
+          logEvent('warning', 'WebSocket连接失败，请检查服务器状态');
+        }
+      } catch (error) {
+        console.error('WebSocket连接错误:', error);
+        ElMessage.error(`WebSocket连接错误: ${error.message}`);
+        logEvent('error', `WebSocket连接错误: ${error.message}`);
+      }
+    });
 
     onBeforeUnmount(() => {  
       // 在组件销毁前断开连接  
@@ -1203,6 +1454,199 @@ export default {
         logEvent('info', '组件卸载：断开WebSocket连接');  
       }  
     });  
+
+    // 好友请求相关
+    const friendRequests = ref([]);
+    
+    // 接受好友请求
+    const handleAcceptFriendRequest = async (request) => {
+      if (!request || !request.id) {
+        ElMessage.warning('无效的好友请求');
+        return;
+      }
+      
+      if (request.loading) return;
+      
+      try {
+        request.loading = true;
+        await acceptFriendRequest(request.id);
+        ElMessage.success('已接受好友请求');
+        logEvent('success', `已接受来自 ${request.fromUsername || '未知用户'} 的好友请求`);
+        
+        // 从请求列表中移除
+        friendRequests.value = friendRequests.value.filter(r => r && r.id !== request.id);
+        
+        // 刷新好友列表
+        await initFriendsAndGroups();
+      } catch (error) {
+        console.error('接受好友请求失败:', error);
+        logEvent('error', `接受好友请求失败: ${error.message}`);
+        ElMessage.error('接受好友请求失败：' + error.message);
+      } finally {
+        if (request) {
+          request.loading = false;
+        }
+      }
+    };
+    
+    // 拒绝好友请求
+    const handleRejectFriendRequest = async (request) => {
+      if (!request || !request.id) {
+        ElMessage.warning('无效的好友请求');
+        return;
+      }
+      
+      if (request.loading) return;
+      
+      try {
+        request.loading = true;
+        await rejectFriendRequest(request.id);
+        ElMessage.success('已拒绝好友请求');
+        logEvent('info', `已拒绝来自 ${request.fromUsername || '未知用户'} 的好友请求`);
+        
+        // 从请求列表中移除
+        friendRequests.value = friendRequests.value.filter(r => r && r.id !== request.id);
+      } catch (error) {
+        console.error('拒绝好友请求失败:', error);
+        logEvent('error', `拒绝好友请求失败: ${error.message}`);
+        ElMessage.error('拒绝好友请求失败：' + error.message);
+      } finally {
+        if (request) {
+          request.loading = false;
+        }
+      }
+    };
+    
+    // 监听好友请求事件
+    stompClient.on('onFriendRequest', (data) => {
+      // 当收到新的好友请求时，刷新请求列表
+      logEvent('info', `收到来自 ${data.fromUsername} 的好友请求`);
+      ElMessage.info(`收到来自 ${data.fromUsername} 的好友请求`);
+      fetchFriendRequests();
+    });
+    
+    // 好友搜索相关
+    const searchQuery = ref('');
+    const searchResults = ref([]);
+    const isSearching = ref(false);
+    const searchTimeout = ref(null);
+
+    // 防抖处理的搜索函数
+    const handleSearch = async () => {
+      if (searchTimeout.value) {
+        clearTimeout(searchTimeout.value);
+      }
+      
+      if (!searchQuery.value.trim()) {
+        searchResults.value = [];
+        return;
+      }
+      
+      searchTimeout.value = setTimeout(async () => {
+        isSearching.value = true;
+        try {
+          // 获取搜索结果，如果服务器返回null或undefined，使用空数组
+          const results = await searchUsers(searchQuery.value.trim()) || [];
+          
+          if (!Array.isArray(results)) {
+            console.error('搜索结果不是数组:', results);
+            searchResults.value = [];
+            return;
+          }
+          
+          // 确保currentUserId存在
+          const currentUserId = stompClient.currentUserId.value;
+          
+          // 过滤掉自己
+          const filteredResults = currentUserId 
+            ? results.filter(user => user && user.id !== currentUserId) 
+            : results;
+            
+          // 标记已经是好友的用户
+          searchResults.value = filteredResults.map(user => ({
+            ...user,
+            loading: false,
+            isAlreadyFriend: Array.isArray(friends) && friends.some(friend => friend && friend.id === user.id)
+          }));
+        } catch (error) {
+          console.error('搜索用户失败:', error);
+          ElMessage.error('搜索用户失败：' + error.message);
+          searchResults.value = [];
+        } finally {
+          isSearching.value = false;
+        }
+      }, 500); // 500ms 防抖延迟
+    };
+
+    // 获取好友列表
+    const fetchFriends = async () => {
+      if (!stompClient.isConnected.value) {
+        ElMessage.warning('WebSocket未连接，无法获取好友列表');
+        return;
+      }
+      
+      try {
+        loading.value = true;
+        const response = await fetch(`${serverUrl.value}/api/user/friends`, {
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${localStorage.getItem('token')}`
+          }
+        });
+        
+        if (!response.ok) {
+          throw new Error(`获取好友列表失败: ${response.status}`);
+        }
+        
+        const data = await response.json();
+        const friendsData = Array.isArray(data) ? data : (data.data || []);
+        
+        if (!Array.isArray(friendsData)) {
+          console.error('获取到的好友数据不是数组:', friendsData);
+          friends.value = [];
+          return;
+        }
+        
+        friends.value = friendsData.map(friend => ({
+          ...friend,
+          loading: false
+        }));
+        
+        logEvent('info', `已加载 ${friends.value.length} 个好友`);
+      } catch (error) {
+        console.error('获取好友列表出错:', error);
+        ElMessage.error(`获取好友列表出错: ${error.message}`);
+        logEvent('error', `获取好友列表出错: ${error.message}`);
+        friends.value = [];
+      } finally {
+        loading.value = false;
+      }
+    };
+
+    // 订阅消息
+    const subscribeToMessages = async () => {
+      // 注册消息事件处理  
+      stompClient.on('onPrivateMessage', handlePrivateMessage);  
+      stompClient.on('onPublicMessage', handlePublicMessage);  
+      stompClient.on('onConnected', (username) => {  
+        logEvent('success', `WebSocket连接成功，用户名: ${username}`);  
+      });  
+      stompClient.on('onDisconnected', () => {  
+        logEvent('info', 'WebSocket连接已断开');  
+      });  
+      stompClient.on('onError', (error) => {  
+        logEvent('error', `WebSocket错误: ${error}`);  
+        ElMessage.error(`发生错误: ${error}`);  
+      });
+      stompClient.on('onFriendRequest', (data) => {
+        logEvent('info', `收到来自 ${data.fromUsername} 的好友请求`);
+        ElMessage.info(`收到来自 ${data.fromUsername} 的好友请求`);
+        fetchFriendRequests();
+      });
+      
+      // 添加初始日志  
+      logEvent('info', '消息订阅已完成');
+    };
 
     return {  
       // 常量  
@@ -1261,9 +1705,30 @@ export default {
       onGroupJoined,  // 虽然不在模板直接用，但逻辑在此
       initFriendsAndGroups, // 确保返回，因为 watch 中用到
       updateChatList, // 确保返回，因为 initFriendsAndGroups 中用到
-      logEvent // 确保返回，因为在多个地方用到
+      logEvent, // 确保返回，因为在多个地方用到
 
+      // 新增好友相关
+      addFriendDialogVisible,
+      addFriendForm,
+      loading,
+      showAddFriendDialog,
+      handleAddFriendDialogClose,
+      handleAddFriend,
+      Plus,
 
+      // 好友请求相关
+      friendRequests,
+      fetchFriendRequests,
+      handleAcceptFriendRequest,
+      handleRejectFriendRequest,
+
+      // 搜索相关
+      searchQuery,
+      searchResults,
+      isSearching,
+      handleSearch,
+      Search,
+      Loading,
     };  
   }  
 };  
@@ -1740,6 +2205,117 @@ export default {
   padding: 10px 15px;
   display: flex;
   justify-content: space-between;
+}
+
+.add-friend-button {
+  padding: 10px;
+  text-align: center;
+  border-bottom: 1px solid #ebeef5;
+}
+
+.add-friend-button .el-button {
+  width: 100%;
+}
+
+.contact-list-container {
+  height: calc(100% - 50px);
+  overflow-y: auto;
+}
+
+/* 好友请求相关样式 */
+.friend-requests-section {
+  margin-bottom: 15px;
+  border-bottom: 1px solid #ebeef5;
+  padding-bottom: 10px;
+}
+
+.section-title {
+  font-size: 14px;
+  font-weight: 500;
+  color: #606266;
+  padding: 8px 10px;
+  background-color: #f8f9fa;
+  border-radius: 4px;
+  margin: 5px 0;
+}
+
+.friend-request-item {
+  display: flex;
+  align-items: center;
+  padding: 10px;
+  border-bottom: 1px dashed #f0f0f0;
+}
+
+.friend-request-item:last-child {
+  border-bottom: none;
+}
+
+.friend-request-info {
+  flex: 1;
+  margin-left: 10px;
+  overflow: hidden;
+}
+
+.friend-request-name {
+  font-weight: 500;
+  font-size: 14px;
+}
+
+.friend-request-time {
+  font-size: 12px;
+  color: #909399;
+  margin-top: 3px;
+}
+
+.friend-request-actions {
+  display: flex;
+  gap: 5px;
+}
+
+.search-section {
+  margin-bottom: 15px;
+}
+
+.search-results {
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.search-result-item {
+  display: flex;
+  align-items: center;
+  padding: 10px;
+  border-bottom: 1px dashed #f0f0f0;
+}
+
+.search-result-item:last-child {
+  border-bottom: none;
+}
+
+.user-info {
+  flex: 1;
+  margin-left: 10px;
+  overflow: hidden;
+}
+
+.username {
+  font-weight: 500;
+  font-size: 14px;
+}
+
+.user-id {
+  font-size: 12px;
+  color: #909399;
+}
+
+.loading-state {
+  text-align: center;
+  color: #909399;
+}
+
+.search-tip {
+  text-align: center;
+  color: #909399;
 }
 
 </style>  
