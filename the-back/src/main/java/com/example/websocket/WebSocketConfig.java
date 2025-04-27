@@ -39,7 +39,7 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
                 .setAllowedOriginPatterns("*")  
                 .setHandshakeHandler(new DefaultHandshakeHandler() {  
                     @Override  
-                    protected CustomPrincipal determineUser(ServerHttpRequest request, WebSocketHandler wsHandler, Map<String, Object> attributes) {  
+                    protected Principal determineUser(ServerHttpRequest request, WebSocketHandler wsHandler, Map<String, Object> attributes) {  
                         // 从URL参数中获取令牌  
                         String token = null;  
                         String query = request.getURI().getQuery();  
@@ -79,8 +79,8 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
     public void configureMessageBroker(@NonNull MessageBrokerRegistry registry) {
         // 客户端订阅地址的前缀
         registry.enableSimpleBroker("/topic", "/queue");
-        // 客户端发送消息地址的前缀,意思是当客户端发送消息时，消息会被发送到/app路径
-        registry.setApplicationDestinationPrefixes("/app");
+        // 客户端发送消息地址的前缀,意思是当客户端发送消息时，消息可以指定发送到/app路径和/system路径
+        registry.setApplicationDestinationPrefixes("/app","/system");
         // 点对点消息前缀
         registry.setUserDestinationPrefix("/user");
     }

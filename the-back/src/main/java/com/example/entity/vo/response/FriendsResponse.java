@@ -6,7 +6,15 @@ import lombok.Data;
 
 @Data
 public class FriendsResponse {
-    private String userId;
-    private String username;
+    private String firstUserId;
+    private String secondUserId;
+    private String firstUsername;
+    private String secondUsername;
     private Date created_at;
+    private Status status;
+    public enum Status {
+        requested,
+        accepted,
+        deleted
+    }
 }

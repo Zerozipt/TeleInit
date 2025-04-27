@@ -4,9 +4,8 @@ import org.springframework.messaging.handler.annotation.MessageMapping;
 import org.springframework.messaging.handler.annotation.Payload;
 import org.springframework.messaging.handler.annotation.SendTo;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
-import org.springframework.stereotype.Controller;
+import org.springframework.stereotype.Controller;   
 import com.example.entity.vo.response.ChatMessage;
-import com.example.entity.vo.response.PrivateChatMessage;
 import com.example.service.impl.AccountServiceImpl;
 import com.example.service.ChatService;
 import com.example.entity.vo.request.CustomPrincipal;
@@ -32,7 +31,13 @@ import java.util.function.Supplier;
 import org.springframework.web.bind.annotation.RestController;
 import com.example.entity.dto.Friends;
 import com.example.entity.dto.Group_member;
+import com.example.entity.dto.PrivateChatMessage;
 import com.example.entity.vo.response.FriendsResponse;
+import com.example.entity.dto.Group_message;
+import java.util.stream.Collectors;
+import com.example.utils.ConvertUtils;
+import java.util.ArrayList;
+import com.example.entity.vo.response.StatusMessage;
 @RestController
 @RequestMapping("/api/chat")
 public class ChatController {
@@ -101,15 +106,24 @@ public class ChatController {
             //通过用户id,构建一个返回message，包括用户id，用户名，用户的好友关系和群聊关系
             //从redis中获取用户的好友关系和群聊关系,转化成json
             List<FriendsResponse> friendIds = chatService.getFriends(userId);
+            //从redis中获取用户的好友请求
+            List<FriendsResponse> friendRequests = chatService.getFriendRequests(userId);
             //从redis中获取群聊关系
             List<Group_member> groupIds = chatService.getGroups(userId);
+            //从redis中获取群聊消息  
+            List<List<Group_message>> groupMessages = groupIds.stream().map(groupId -> chatService.getGroupChatHistoryByGroupId(groupId.getGroupId(), 100)).collect(Collectors.toList());
+            //从redis中获取私聊消息
+            List<PrivateChatMessage> privateMessages = chatService.getPrivateChatHistory(Integer.parseInt(userId), 100);
             System.out.println("群组列表: " + groupIds);
             //构建返回message，包括用户id，用户名，用户的好友关系和群聊关系，要求返回的格式为json
             JSONObject jsonObject = new JSONObject();
             jsonObject.put("userId", userId);
             jsonObject.put("username", decodedJWT.getClaim("name").asString());
             jsonObject.put("friendIds", JSON.toJSONString(friendIds));
+            jsonObject.put("friendRequests", JSON.toJSONString(friendRequests));
             jsonObject.put("groupIds", JSON.toJSONString(groupIds));
+            jsonObject.put("groupMessages", JSON.toJSONString(groupMessages));
+            jsonObject.put("privateMessages", JSON.toJSONString(privateMessages));
             System.out.println("返回的message: " + jsonObject);
             return messageHandler(() -> jsonObject);
         } catch (Exception e) {
@@ -150,16 +164,16 @@ public class ChatController {
 
     // 处理私人消息 - 简化，不使用路径变量
     @MessageMapping("/chat/private") // 移除 {friendId}
-    public void handlePrivateMessage(@Payload PrivateChatMessage message, // 消息体需要包含 toUser 和 content
+    public void handlePrivateMessage(@Payload ChatMessage message, // 消息体需要包含 toUser 和 content
                                     CustomPrincipal principal) {
         // 填充发送者和时间戳
-        message.setFromUser(principal.getUsername());
-        message.setFromUserId(principal.getUserId());
+        message.setSender(principal.getUsername());
+        message.setSenderId(Integer.parseInt(principal.getName()));
         message.setTimestamp(Date.from(Instant.now())); // 或者 String
 
         // System.out.println("私有消息: 从 " + message.getFromUserId() + " 到 " + message.getToUserId() + ": " + message.getContent());
         // 验证接收者是否存在 (简单检查，实际应用可能需要查用户服务)
-        if (message.getToUserId() == null || message.getToUserId().trim().isEmpty()) {
+        if (message.getReceiverId() == null) {
              System.err.println("无效的私聊消息：接收者不能为空。");
              // 可以选择性地通知发送者错误，这里仅记录日志
              return;
@@ -167,29 +181,28 @@ public class ChatController {
         //将消息发送到私聊队列,进行消息的持久化,先发送到队列，再保存到mysql
         rabbitTemplate.convertAndSend("privateChat", message);
         //先将消息保存到redis
-        String key = Const.PRIVATE_CHAT_KEY + (message.getToUserId() != null ? message.getToUserId() : "default");
+        //设置key为PRIVATE_CHAT_KEY+senderId
+        String key = Const.PRIVATE_CHAT_KEY + message.getSenderId();
         stringRedisTemplate.opsForList().rightPush(key, JSON.toJSONString(message));
         // 设置过期时间
         stringRedisTemplate.expire(key, Const.MESSAGE_EXPIRE_DAYS, TimeUnit.DAYS);
         
         messagingTemplate.convertAndSendToUser(
-            message.getToUserId(),
+            message.getReceiverId().toString(),
             "/queue/private", // 客户端需要订阅 /user/queue/private
             message
         );
         
-        // 同时将消息发回给发送者，实现聊天记录同步
-        messagingTemplate.convertAndSendToUser(
-            message.getFromUserId(),
-            "/queue/private",
-            message
-        );
     }
 
     // 处理心跳包
     @MessageMapping("/chat/heartbeat")
     @SendTo("/topic/public/general")
     public void handleHeartbeat(Principal principal) {
+        if(principal == null){
+
+            return;
+        }
         System.out.println("收到心跳包: " + principal.getName());
         // 返回心跳包 前端收到心跳包后，更新心跳包的时间
         messagingTemplate.convertAndSendToUser(
@@ -198,5 +211,79 @@ public class ChatController {
             "heartbeat"
         );
     }
+
  
+
+    // 处理系统消息
+    @MessageMapping("/system/radiate")
+    public void handleSystemMessage(Principal principal, String message) {
+        System.out.println("收到系统消息: " + message);
+    }
+
+    @MessageMapping("/system/offline")
+    public void handleOffline(Principal principal, StatusMessage message) {
+        System.out.println("收到离线消息: " + principal.getName());
+        List<FriendsResponse> friends = chatService.getFriends(message.getUserId());
+        for (FriendsResponse friend : friends) {
+            if(friend.getSecondUserId() == message.getUserId()){
+                messagingTemplate.convertAndSendToUser(
+                    friend.getFirstUserId(),
+                    "/queue/offline",
+                    message
+                );
+            }
+            else if(friend.getFirstUserId() == message.getUserId()){
+                messagingTemplate.convertAndSendToUser(
+                    friend.getSecondUserId(),
+                    "/queue/offline",
+                    message
+                );
+            }
+        }
+    }
+
+    @MessageMapping("/system/online")
+    public void handleOnline(Principal principal, StatusMessage message) {
+        System.out.println("收到上线消息: " + principal.getName());
+        List<FriendsResponse> friends = chatService.getFriends(message.getUserId());
+        for (FriendsResponse friend : friends) {
+            if(friend.getSecondUserId() == message.getUserId()){
+                messagingTemplate.convertAndSendToUser(
+                    friend.getFirstUserId(),
+                    "/queue/online",
+                    message
+                );
+            }
+            else if(friend.getFirstUserId() == message.getUserId()){
+                messagingTemplate.convertAndSendToUser(
+                    friend.getSecondUserId(),
+                    "/queue/online",    
+                    message
+                );
+            }
+        }
+    }
+
+    @GetMapping("/history/private")
+    public RestBean<JSONObject> getPrivateChatHistory(@RequestParam String userId, @RequestParam String friendId) {
+        //直接从redis中获取私聊消息
+        String key = Const.PRIVATE_CHAT_KEY + userId;
+        List<String> privateMessages = stringRedisTemplate.opsForList().range(key, 0, -1);
+        //将privateMessages转换为PrivateChatMessage
+        if(privateMessages == null || privateMessages.size() == 0){
+            return null;
+        }   
+
+        List<PrivateChatMessage> messages = new ArrayList<>();
+        for (String json : privateMessages) {
+            List<PrivateChatMessage> message = JSON.parseArray(json, PrivateChatMessage.class);
+            messages.addAll(message);
+        }
+        //从拿到的数据中，找到friendId对应的消息
+        List<PrivateChatMessage> friendMessages = messages.stream().filter(message -> String.valueOf(message.getReceiverId()).equals(friendId)).collect(Collectors.toList());
+        JSONObject jsonObject = new JSONObject();
+        jsonObject.put("privateMessages", JSON.toJSONString(friendMessages));
+        return messageHandler(() -> jsonObject);
+    }
+    
 }

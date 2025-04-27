@@ -34,4 +34,11 @@ public interface AccountService extends IService<Account>, UserDetailsService {
      * @return 用户ID (String 类型)，如果找不到则返回 null
      */
     int findIdByUsername(String username); // <-- 添加这个方法声明
+
+    /**
+     * 搜索用户
+     * @param searchTerm 搜索关键词
+     * @return 用户列表
+     */
+    List<Account> searchUsers(String searchTerm);
 }

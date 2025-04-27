@@ -1,7 +1,6 @@
 package com.example.service.impl;
 
 import com.example.entity.vo.response.ChatMessage;
-import com.example.entity.vo.response.PrivateChatMessage;
 import com.example.listener.FriendRequestListener;
 import com.example.service.ChatService;
 import jakarta.annotation.Resource;
@@ -21,13 +20,17 @@ import com.example.mapper.FriendsMapper;
 import com.example.mapper.Group_memberMapper;
 import java.util.stream.Collectors;     
 import com.example.entity.dto.Group_message;
+import com.example.entity.dto.PrivateChatMessage;
 import com.example.mapper.Group_messageMapper;
 import com.example.utils.ConvertUtils;
 import java.util.ArrayList;
 import com.alibaba.fastjson2.*;
 import com.example.entity.vo.response.FriendsResponse;
 import com.example.entity.dto.Account;
-
+import java.util.Map;
+import java.util.HashMap;
+import com.example.mapper.Private_messagesMapper;
+import com.example.entity.vo.response.ChatMessage;
 /**
  * 聊天服务实现类，使用Redis存储最近消息，可以根据需要扩展为数据库存储
  */
@@ -41,6 +44,9 @@ public class ChatServiceImpl implements ChatService {
 
     @Resource
     FriendsMapper friendsMapper;
+
+    @Resource
+    Private_messagesMapper privateMessageMapper;
 
     @Resource
     Group_memberMapper groupMemberMapper;
@@ -71,16 +77,12 @@ public class ChatServiceImpl implements ChatService {
     }
 
     @Override
-    public boolean savePrivateMessage(PrivateChatMessage message) {
+    public boolean savePrivateMessage(ChatMessage message) {
         try {
             // 构建发送者与接收者之间的对话键
-            String conversationKey = Const.PRIVATE_CHAT_KEY + getConversationId(message.getFromUser(), message.getToUser());    
-            // 将消息转为JSON保存
-            stringRedisTemplate.opsForList().rightPush(conversationKey, JSON.toJSONString(message));
-            // 设置过期时间
-            stringRedisTemplate.expire(conversationKey, Const.MESSAGE_EXPIRE_DAYS, TimeUnit.DAYS);
-            
-            logger.info("保存私人消息: {}, 从 {} 到 {}", message.getContent(), message.getFromUser(), message.getToUser());
+            PrivateChatMessage privateChatMessage = ConvertUtils.convertToPrivateChatMessage(message);
+            privateMessageMapper.insert(privateChatMessage);
+            logger.info("保存私人消息: {}, 从 {} 到 {}", privateChatMessage.getContent(), privateChatMessage.getSenderId(), privateChatMessage.getReceiverId());
             return true;
         } catch (Exception e) {
             logger.error("保存私人消息失败", e);
@@ -125,29 +127,16 @@ public class ChatServiceImpl implements ChatService {
         if (friendsResponseList == null) {
             logger.debug("Cache miss or parse error for friends list: {}", key); // 记录缓存未命中
 
-            friendsResponseList = new ArrayList<>();
-            int currentUserId = Integer.parseInt(userId);        
+            friendsResponseList = new ArrayList<>();    
             List<Friends> friendsList = getFriendsByUserId(userId);
             System.out.println("用户" + userId + "的好友列表：" + friendsList);
             if (friendsList != null && !friendsList.isEmpty()) {
-                 for (Friends friendRelation : friendsList) {
-                    int friendId = friendRelation.getTheFirstUserId() == currentUserId
-                                    ? friendRelation.getTheSecondUserId()
-                                    : friendRelation.getTheFirstUserId();
-                    System.out.println(friendId);
-                    Account friendAccount = accountService.getAccountById(friendId);
-                    if (friendAccount != null) {
-                        friendsResponseList.add(ConvertUtils.convertToFriendsResponse(friendAccount));
-                    } else {
-                        logger.warn("Could not find account details for friend ID: {}", friendId);
-                        // 可以选择跳过或添加一个占位符
-                    }
-                }
+                friendsResponseList = friendsList.stream()
+                    .map(friend -> ConvertUtils.convertToFriendsResponse(friend, accountService))
+                    .collect(Collectors.toList());
             }
 
             // 4. 将从数据库获取的数据存入 Redis 缓存 (序列化为 JSON 字符串)
-            //    并设置一个过期时间 (例如：1 小时)
-           System.out.println(friendRequestListener);
             if (friendsResponseList != null && !friendsResponseList.isEmpty()) { // 仅在列表非空时缓存
                  try {
                     String jsonToCache = JSON.toJSONString(friendsResponseList);
@@ -163,6 +152,19 @@ public class ChatServiceImpl implements ChatService {
         // 返回最终结果 (可能来自缓存或数据库)
         // 如果数据库也查不到，friendsResponseList 可能为 null 或 empty list
         return friendsResponseList != null ? friendsResponseList : new ArrayList<>(); // 保证始终返回 List
+    }
+
+
+    @Override
+    public List<FriendsResponse> getFriendRequests(String userId) {
+        List<FriendsResponse> friendsResponseList = new ArrayList<>();        
+        List<Friends> friendsList = getFriendRequestsByUserId(userId);
+        if (friendsList != null && !friendsList.isEmpty()) {
+            for (Friends friendRelation : friendsList) {
+                friendsResponseList.add(ConvertUtils.convertToFriendsResponse(friendRelation, accountService));
+           }
+       }
+        return friendsResponseList;
     }
 
     @Override
@@ -217,15 +219,25 @@ public class ChatServiceImpl implements ChatService {
         //从数据库中获取好友信息,返回好友的id列表
         //数据库的设计规则是，好友关系是双向的，即如果用户A是用户B的好友，那么用户B也是用户A的好友
         //所以需要从数据库中获取两次好友信息，然后合并
+        //筛选的时候，筛选出status为accepted的好友
         int id = Integer.parseInt(userId);
-        List<Friends> friends = friendsMapper.selectList(Wrappers.<Friends>query().eq("the_first_user_id", id));
-        List<Friends> friends2 = friendsMapper.selectList(Wrappers.<Friends>query().eq("the_second_user_id", id));
+        List<Friends> friends = friendsMapper.selectList(Wrappers.<Friends>query().eq("the_first_user_id", id).eq("status", Friends.Status.accepted));
+        List<Friends> friends2 = friendsMapper.selectList(Wrappers.<Friends>query().eq("the_second_user_id", id).eq("status", Friends.Status.accepted));
         //合并两个列表
         List<Friends> friends3 = new ArrayList<>();
         friends3.addAll(friends);
         friends3.addAll(friends2);
         return friends3;
     }
+
+    public List<Friends> getFriendRequestsByUserId(String userId){
+        int id = Integer.parseInt(userId);
+        //从数据库中获取好友请求信息,返回好友请求的id列表
+        //数据库的设计是，好友请求类的话只会存储一条，意味用户1向用户2请求
+        List<Friends> friends = friendsMapper.selectList(Wrappers.<Friends>query().eq("the_second_user_id", id));
+        return friends;
+    }
+
 
     
     public List<Group_member> getGroupsByUserId(String userId){
@@ -236,6 +248,219 @@ public class ChatServiceImpl implements ChatService {
         } catch (NumberFormatException e) {
             logger.error("Invalid userId format: {}", userId, e);
             // 或者抛出自定义异常，或者返回空列表，根据你的错误处理策略决定
+            return new ArrayList<>();
+        }
+    }
+
+    @Override
+    public boolean isFriend(int userId1, int userId2) {
+        // 检查两个用户是否已经是好友关系
+        List<Friends> friends = friendsMapper.selectList(Wrappers.<Friends>query()
+            .eq("the_first_user_id", userId1)
+            .eq("the_second_user_id", userId2)
+            .eq("status", Friends.Status.accepted));
+        
+        if (!friends.isEmpty()) {
+            return true;
+        }
+
+        // 检查反向关系
+        friends = friendsMapper.selectList(Wrappers.<Friends>query()
+            .eq("the_first_user_id", userId2)
+            .eq("the_second_user_id", userId1)
+            .eq("status", Friends.Status.accepted));
+
+        return !friends.isEmpty();
+    }
+
+    @Override
+    public boolean hasFriendRequest(int senderId, int receiverId) {
+        // 检查是否已经存在好友请求
+        List<Friends> requests = friendsMapper.selectList(Wrappers.<Friends>query()
+            .eq("the_first_user_id", senderId)
+            .eq("the_second_user_id", receiverId)
+            .eq("status", Friends.Status.requested));
+        
+        if (!requests.isEmpty()) {
+            return true;
+        }
+
+        // 检查反向请求
+        requests = friendsMapper.selectList(Wrappers.<Friends>query()
+            .eq("the_first_user_id", receiverId)
+            .eq("the_second_user_id", senderId)
+            .eq("status", Friends.Status.requested));
+
+        return !requests.isEmpty();
+    }
+
+    @Override
+    public boolean saveFriendRequest(Friends friendRequest) {
+        try {
+            if (friendRequest.getTheFirstUserId() == friendRequest.getTheSecondUserId()) {
+                logger.error("不能添加自己为好友");
+                return false;
+            }
+            
+            friendsMapper.insert(friendRequest);
+            // 通知被请求方有新的好友请求
+            // 这里可以使用WebSocket通知前端
+            return true;
+        } catch (Exception e) {
+            logger.error("保存好友请求失败", e);
+            return false;
+        }
+    }
+
+    @Override
+    public List<Map<String, Object>> getReceivedFriendRequests(int userId) {
+        try {
+            // 获取所有接收到的好友请求（作为第二个用户）
+            List<Friends> requests = friendsMapper.selectList(Wrappers.<Friends>query()
+                    .eq("the_second_user_id", userId)
+                    .eq("status", Friends.Status.requested)
+                    .orderByDesc("created_at"));
+
+            // 转换为前端需要的格式，包括请求发送者的信息
+            return requests.stream().map(request -> {
+                Account sender = accountService.getAccountById(request.getTheFirstUserId());
+                Map<String, Object> result = new HashMap<>();
+                result.put("id", request.getId());
+                result.put("fromUserId", sender.getId());
+                result.put("fromUsername", sender.getUsername());
+                result.put("createTime", request.getCreatedAt());
+                return result;
+            }).collect(Collectors.toList());
+        } catch (Exception e) {
+            logger.error("获取好友请求失败", e);
+            return new ArrayList<>();
+        }
+    }
+
+    @Override
+    public boolean acceptFriendRequest(int requestId, int userId) {
+        try {
+            // 获取请求
+            Friends request = friendsMapper.selectById(requestId);
+            if (request == null || request.getTheSecondUserId() != userId || 
+                request.getStatus() != Friends.Status.requested) {
+                logger.error("好友请求不存在或无权操作");
+                return false;
+            }
+
+            // 更新状态为已接受
+            request.setStatus(Friends.Status.accepted);
+            return friendsMapper.updateById(request) > 0;
+        } catch (Exception e) {
+            logger.error("接受好友请求失败", e);
+            return false;
+        }
+    }
+
+    @Override
+    public boolean rejectFriendRequest(int requestId, int userId) {
+        try {
+            // 获取请求
+            Friends request = friendsMapper.selectById(requestId);
+            if (request == null || request.getTheSecondUserId() != userId ||
+                request.getStatus() != Friends.Status.requested) {
+                logger.error("好友请求不存在或无权操作");
+                return false;
+            }
+
+            // 更新状态为已拒绝
+            request.setStatus(Friends.Status.deleted);
+            return friendsMapper.updateById(request) > 0;
+        } catch (Exception e) {
+            logger.error("拒绝好友请求失败", e);
+            return false;
+        }
+    }
+
+    @Override
+    public List<PrivateChatMessage> getPrivateChatHistory(int userId,int limit) {
+        try {
+            // 构建私聊消息键，将userId转换为字符串
+            String privateKey = Const.PRIVATE_CHAT_KEY + String.valueOf(userId);
+            // 获取Redis中存储的消息数量
+            Long size = stringRedisTemplate.opsForList().size(privateKey);
+            if (size == null || size == 0) { //如果私聊消息为空，则从数据库中获取
+                logger.info("没有找到私聊消息: {}", privateKey);
+                //从数据库中获取私聊消息,包括sender_id和receiver_id,只要sender_id或receiver_id中有一个是userId，就获取，并且以时间created_at排序
+                List<PrivateChatMessage> privateChatMessages = privateMessageMapper.selectList(Wrappers.<PrivateChatMessage>query().eq("sender_id", userId).or().eq("receiver_id", userId).orderByDesc("created_at"));
+                //将私聊消息保存到Redis中
+                stringRedisTemplate.opsForList().rightPush(privateKey, JSON.toJSONString(privateChatMessages));
+                //设置过期时间
+                stringRedisTemplate.expire(privateKey, Const.MESSAGE_EXPIRE_DAYS, TimeUnit.DAYS);
+            }
+            //如果私聊消息不为空，则从Redis中获取
+            List<String> messageJsons = stringRedisTemplate.opsForList().range(privateKey, 0, size - 1);
+            //解析JSON并转换为消息对象
+            List<PrivateChatMessage> messages = new ArrayList<>();
+            for (String json : messageJsons) {
+                //需要对每一条记录进行判断，如果是list，则转换为list
+                if(json.startsWith("[")){
+                    List<PrivateChatMessage> message = JSON.parseArray(json, PrivateChatMessage.class);
+                    messages.addAll(message);
+                }else{
+                    messages.add(JSON.parseObject(json, PrivateChatMessage.class));
+                }
+            }
+            //截断私聊消息
+            if(messages.size() < limit){
+                return messages;
+            }
+            messages = messages.subList(0, limit);
+            return messages;
+        } catch (Exception e) {
+            logger.error("获取私聊消息失败", e);
+            return new ArrayList<>();
+        }
+    }
+    
+    @Override
+    public List<Group_message> getGroupChatHistoryByGroupId(String groupId, int limit) {
+        try {
+            // 构建群组消息键
+            String groupKey = Const.GROUP_CHAT_KEY + groupId;
+
+            // 获取Redis中存储的消息
+            Long size = stringRedisTemplate.opsForList().size(groupKey);
+            if (size == null || size == 0) {
+                //如果群组消息为空，则从数据库中获取
+                List<Group_message> groupMessages = group_messageMapper.selectList(Wrappers.<Group_message>query().eq("groupId", groupId));
+                //将群组消息保存到Redis中
+                stringRedisTemplate.opsForList().rightPush(groupKey, JSON.toJSONString(groupMessages));
+                //设置过期时间
+                stringRedisTemplate.expire(groupKey, Const.MESSAGE_EXPIRE_DAYS, TimeUnit.DAYS);
+            }
+            
+            // 从Redis获取消息列表
+            List<String> messageJsons = stringRedisTemplate.opsForList().range(groupKey, 0, size - 1);
+            // 解析JSON并转换为消息对象
+            List<Group_message> messages = new ArrayList<>();
+            for (String json : messageJsons) {
+                try {
+                    //由于每一条记录都是list，所以需要转换为list
+                    if(json.startsWith("[")){
+                        List<Group_message> message = JSON.parseArray(json, Group_message.class);
+                        messages.addAll(message);
+                    }else{
+                        messages.add(JSON.parseObject(json, Group_message.class));
+                    }
+                } catch (Exception e) {
+                    logger.error("解析群组消息JSON失败: {}", json, e);
+                }
+            }
+            
+            logger.info("获取到 {} 条群组聊天消息历史, 群组ID: {}", messages.size(), groupId);
+            if(messages.size() < limit){
+                return messages;
+            }
+            messages = messages.subList(0, limit);
+            return messages;
+        } catch (Exception e) {
+            logger.error("获取群组聊天历史记录失败", e);
             return new ArrayList<>();
         }
     }

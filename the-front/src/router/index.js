@@ -1,5 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import {isRoleAdmin, isUnauthorized} from "@/net";
+import { isRoleAdmin, isUnauthorized } from "@/net";
 
 const router = createRouter({
     history: createWebHistory(import.meta.env.BASE_URL),
@@ -9,6 +9,10 @@ const router = createRouter({
             name: 'welcome',
             component: () => import('@/views/WelcomeView.vue'),
             children: [
+                {
+                    path: '',
+                    redirect: '/login'
+                },
                 {
                     path: 'login',
                     name: 'welcome-login',
@@ -28,28 +32,35 @@ const router = createRouter({
         },
         {
             path: '/index',
-            name: 'indexPage',
+            name: 'index',
             component: () => import('@/views/IndexView.vue'),
-        },
-        {
-            path: '/chat-debugger',
-            name: 'chatDebugger',
-            component: () => import('@/views/ChatDebugger.vue'),
-            meta: { requiresAuth: false }
+            redirect: '/index/chat',
+            children: [
+                {
+                    path: 'chat',
+                    name: 'index-chat',
+                    component: () => import('@/views/ChatView.vue')
+                },
+                {
+                    path: 'contacts',
+                    name: 'index-contacts',
+                    component: () => import('@/views/ContactsView.vue')
+                }
+            ]
         }
     ]
 })
 
 router.beforeEach((to, from, next) => {
-    const unauthorized = isUnauthorized(), admin = isRoleAdmin()
-    if(to.name && to.name.startsWith('welcome') && !unauthorized) { //如果路由是welcome开头，并且授权，则跳转到index页面
-        next('/index')
-    } else if(to.fullPath.startsWith('/admin') && !admin) { //如果路由是admin开头，并且未授权，则跳转到index页面
-        next('/index')
-    }else if(to.fullPath.startsWith('/index') && unauthorized) { //如果路由是index开头，并且未授权，则跳转到welcome页面
-        next('/')
+    const unauthorized = isUnauthorized();
+    const isAdmin = isRoleAdmin();
+
+    if(to.name && to.name.startsWith('welcome') && !unauthorized) {
+        next('/index');
+    } else if (to.path.startsWith('/index') && unauthorized) {
+        next('/');
     } else {
-        next()
+        next();
     }
 })
 

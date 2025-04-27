@@ -27,7 +27,10 @@ const defaultFailure = (message, status, url) => {
 
 function takeAccessToken() {
     const str = localStorage.getItem(authItemName) || sessionStorage.getItem(authItemName);
-    if(!str) return null
+    if(!str){
+        router.push({ name: 'welcome-login' })
+        return null
+    }
     const authObj = JSON.parse(str)
     if(authObj.expire <= new Date()) {
         deleteAccessToken()

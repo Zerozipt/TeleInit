@@ -38,19 +38,115 @@ class StompClientWrapper {
         this.resolveConnectionPromise = null;
         this.rejectConnectionPromise = null;
         this.subscriptions = {}; // 存储订阅，键为 destination，值为 STOMP subscription 对象
-        this.heartbeatInterval = 5000; // 心跳间隔,单位为毫秒
+        this.heartbeatInterval = 10000; // 心跳间隔,单位为毫秒
         this.heartbeatTimer = null; // 心跳定时器
         this.reconnectInterval = 5000; // 重连间隔,单位为毫秒
         this.friends = ref([]);
+        this.friendRequests = ref([]);
         this.groups = ref([]);
+        //群组消息的结构是二维数组，数组中每一项是一个Group_message对象的数组，代表一个群聊的聊天记录
+        //对于这样的结构，为了方便前端显示，可以使用一个map来存储，key为群组id，value为群组消息的数组
+        this.groupMessages = ref(new Map());
+        //私聊消息的结构是一维数组，数组中存储的是PrivateChatMessage对象
+        this.privateMessages = ref([]); 
         // 回调注册表
+        // 注册表的实际含义是：当某个事件发生时，调用_trigger方法，触发事件，而被调用者是回调函数
+        // 在此处，表现为触发事件时，将"事件"存储到注册表中，而"事件"的回调函数是注册表中的回调函数
         this.callbacks = {
             onConnected: [], // 存储回调函数，意为这个变量是一个数组，数组中存储的是回调函数
             onDisconnected: [],
             onError: [],
             onPublicMessage: [],
             onPrivateMessage: [],
+            onSystemMessage: [],
         };
+        // 添加这里 - 页面关闭事件监听
+    if (typeof window !== 'undefined') {
+        // 监听页面关闭事件
+        window.addEventListener('beforeunload', (event) => {
+            // 在页面关闭前尝试发送离线状态，直接调用disconnect方法
+            this.disconnect();
+        });
+        
+        // 监听网络状态变化
+        window.addEventListener('offline', () => {
+            console.log('[StompClientWrapper] 网络连接断开');
+            // 网络断开时，触发清理但不主动断开连接
+            // Stomp客户端会自行处理网络中断
+            this._trigger('onError', '网络连接已断开');
+        });
+        
+        window.addEventListener('online', () => {
+            console.log('[StompClientWrapper] 网络连接恢复');
+            // 网络恢复时，检查连接状态
+            if (!this.isConnected.value && !this.stompClient.value?.connected) {
+                console.log('[StompClientWrapper] 尝试重新连接');
+                // 可以尝试重新连接，或者通知用户手动重连
+                this._trigger('onError', '网络已恢复，请刷新页面重新连接');
+            }
+        });
+        }
+    }
+
+    // 刷新群组列表
+    refreshGroups() {
+        if (!this.isConnected.value || !this.stompClient.value?.connected) {
+            console.warn('[StompClientWrapper] 未连接到WebSocket服务器，无法刷新群组列表');
+            return Promise.reject(new Error('未连接到服务器'));
+        }
+
+        return new Promise((resolve, reject) => {
+            try {
+                // 获取JWT令牌
+                const authData = localStorage.getItem('authorize');
+                if (!authData) {
+                    return reject(new Error('用户未登录'));
+                }
+                
+                const parsedAuth = JSON.parse(authData);
+                const jwt = parsedAuth?.token;
+                
+                if (!jwt) {
+                    return reject(new Error('无效的认证信息'));
+                }
+                
+                // 调用后端API获取最新的群组列表
+                internalPost('/api/chat/GetGroups',
+                    null,
+                    {
+                        'Authorization': 'Bearer ' + jwt
+                    },
+                    (data) => {
+                        if (!data) {
+                            console.error('[StompClientWrapper] 从服务器收到空数据');
+                            return reject(new Error('从服务器收到空数据'));
+                        }
+                        
+                        console.log('[StompClientWrapper] 刷新群组列表成功:', data);
+                        
+                        try {
+                            // 更新群组列表
+                            this.groups.value = data || [];
+                            
+                            // 更新群组订阅
+                            this._subscribeToPublic();
+                            
+                            resolve(this.groups.value);
+                        } catch (e) {
+                            console.error('[StompClientWrapper] 处理群组数据出错:', e);
+                            reject(e);
+                        }
+                    },
+                    (errorMsg) => {
+                        console.error('[StompClientWrapper] 刷新群组列表失败:', errorMsg);
+                        reject(new Error(errorMsg));
+                    }
+                );
+            } catch (e) {
+                console.error('[StompClientWrapper] refreshGroups方法异常:', e);
+                reject(e);
+            }
+        });
     }
 
     // 将getUserInfByJwt移到类内部作为方法
@@ -94,6 +190,30 @@ class StompClientWrapper {
                                 console.log('[StompClientWrapper] 解析群组列表成功, 群组列表:', parsedGroups);
                                 console.log('[StompClientWrapper] 解析群组列表成功, 群组数量:', parsedGroups.length);
                             }
+                            if (data.groupMessages) {
+                                // 这里后端传来的 groupMessages 是 List<List<Group_message>> 的 JSON 字符串
+                                const parsedGroupMsgArrays = JSON.parse(data.groupMessages) || [];
+                                // 将每个群组的消息列表按首条消息的 groupId 建立映射
+                                parsedGroupMsgArrays.forEach(msgList => {
+                                    if (Array.isArray(msgList) && msgList.length > 0) {
+                                        const gid = String(msgList[0].groupId);
+                                        this.groupMessages.value.set(gid, msgList);
+                                    }
+                                });
+                                console.log('[StompClientWrapper] 解析群组消息映射成功:', this.groupMessages.value);
+                            }
+                            if(data.privateMessages){
+                                const parsedPrivateMessages = JSON.parse(data.privateMessages) || [];
+                                this.privateMessages.value = parsedPrivateMessages;
+                                console.log('[StompClientWrapper] 解析私聊消息列表成功, 私聊消息列表:', parsedPrivateMessages);
+                                console.log('[StompClientWrapper] 解析私聊消息列表成功, 私聊消息数量:', parsedPrivateMessages.length);
+                            }
+                            if(data.friendRequests){
+                                const parsedFriendRequests = JSON.parse(data.friendRequests) || [];
+                                this.friendRequests.value = parsedFriendRequests;
+                                console.log('[StompClientWrapper] 解析好友请求列表成功, 好友请求列表:', parsedFriendRequests);
+                                console.log('[StompClientWrapper] 解析好友请求列表成功, 好友请求数量:', parsedFriendRequests.length);
+                            }
                         } catch (parseError) {
                             console.error('[StompClientWrapper] 解析好友或群组数据出错:', parseError);
                         }
@@ -104,9 +224,32 @@ class StompClientWrapper {
                         
                         this._subscribeToPublic();
                         this._subscribeToPrivate();
+                        this._subscribeToSystem();
+                        this._subscribeOnlineStatus();
+                        this._subscribeOfflineStatus();
                         
                         this.isConnected.value = true;
                         console.log('[StompClientWrapper] 连接状态已更新:', this.isConnected.value);
+                        // 发送上线状态
+                        if (this.stompClient.value) {
+                            try {
+                                console.log('[StompClientWrapper] Publishing online status for userId:', this.currentUserId.value, 'Type:', typeof this.currentUserId.value);
+                                console.log('[StompClientWrapper] 发送上线状态');
+                                this.stompClient.value.publish({
+                                    destination: '/app/system/online',
+                                    body: JSON.stringify({
+                                        status: 'ONLINE',
+                                        userId: this.currentUserId.value.toString()
+                                    }),
+                                    headers: {
+                                        'user-id': this.currentUserId.value.toString()
+                                     }
+                                });
+                                console.log('[StompClientWrapper] Publish call seemingly successful (frontend perspective).'); // 新增
+                            } catch (publishError) {
+                                console.error('[StompClientWrapper] !!! Error during stompClient.publish !!!', publishError); // 新增
+                            }
+                        }
                         this._trigger('onConnected', this.currentUser.value);
                         this._startHeartbeat();
                     });
@@ -138,17 +281,31 @@ class StompClientWrapper {
     }
 
     // --- 事件注册 ---
-    //eventName是事件名，callback是事件回调函数
+    // eventName是事件名，callback是事件回调函数
     on(eventName, callback) {
         if (this.callbacks[eventName]) {
-            this.callbacks[eventName].push(callback);
+            // Optional: Check if callback already exists to prevent duplicates
+            if (!this.callbacks[eventName].includes(callback)) {
+                this.callbacks[eventName].push(callback);
+            }
         } else {
-            console.warn(`[StompClientWrapper] Unknown event name: ${eventName}`);
+            console.warn(`[StompClientWrapper] Unknown event name for 'on': ${eventName}`);
+        }
+    }
+
+    // --- 移除事件监听 --- 
+    off(eventName, callback) {
+        if (this.callbacks[eventName]) {
+            this.callbacks[eventName] = this.callbacks[eventName].filter(
+                registeredCallback => registeredCallback !== callback
+            );
+        } else {
+            console.warn(`[StompClientWrapper] Unknown event name for 'off': ${eventName}`);
         }
     }
 
     // --- 触发事件 ---
-    _trigger(eventName, ...args) {
+    _trigger(eventName, ...args) { 
         if (this.callbacks[eventName]) {
             this.callbacks[eventName].forEach(cb => cb(...args));
         }
@@ -238,15 +395,35 @@ class StompClientWrapper {
 
     disconnect() {
         if (this.stompClient.value && this.stompClient.value.connected) {
-            // 取消所有订阅
-            Object.values(this.subscriptions).forEach(sub => sub?.unsubscribe());
-            this.subscriptions = {};
-
-            this.stompClient.value.disconnect(() => {
-                console.log('[StompClientWrapper] Disconnected.');
+            try {
+                // 发送离线状态通知
+                this.stompClient.value.publish({
+                    destination: '/app/system/offline',
+                    body: JSON.stringify({
+                        status: 'OFFLINE',
+                        userId: this.currentUserId.value
+                    }),
+                    headers: {
+                        'user-id': this.currentUserId.value
+                    }
+                });
+                
+                // 给服务器一点时间处理离线消息
+                setTimeout(() => {
+                    // 取消所有订阅
+                    Object.values(this.subscriptions).forEach(sub => sub?.unsubscribe());
+                    this.subscriptions = {};
+    
+                    this.stompClient.value.disconnect(() => {
+                        console.log('[StompClientWrapper] Disconnected.');
+                        this._cleanup();
+                        this._trigger('onDisconnected');
+                    });
+                }, 200); // 短暂延迟确保离线消息被发送
+            } catch (e) {
+                console.error('[StompClientWrapper] 发送离线状态失败:', e);
                 this._cleanup();
-                this._trigger('onDisconnected');
-            });
+            }
         } else {
            this._cleanup(); // 确保状态被重置
         }
@@ -299,6 +476,7 @@ class StompClientWrapper {
         this.rejectConnectionPromise = null;
         this.friends.value = [];
         this.groups.value = [];
+        this.friendRequests.value = [];
     }
 
     // --- 订阅 ---
@@ -341,6 +519,30 @@ class StompClientWrapper {
         }});
     }
     
+    _subscribeOnlineStatus() {
+        const onlineDest = '/user/queue/online';
+        if (!this.subscriptions[onlineDest] && this.stompClient.value?.connected) {
+            this.subscriptions[onlineDest] = this.stompClient.value.subscribe(onlineDest, (message) => {
+                const statusUpdate = JSON.parse(message.body);
+                console.log('[StompClientWrapper] User Online:', statusUpdate);
+                // 在这里触发一个特定的 'onUserOnline' 事件
+                this._trigger('onUserOnline', statusUpdate); 
+            });
+        }
+    }
+
+    _subscribeOfflineStatus() {
+       const offlineDest = '/user/queue/offline';
+        if (!this.subscriptions[offlineDest] && this.stompClient.value?.connected) {
+            this.subscriptions[offlineDest] = this.stompClient.value.subscribe(offlineDest, (message) => {
+                const statusUpdate = JSON.parse(message.body);
+                console.log('[StompClientWrapper] User Offline:', statusUpdate);
+                 // 在这里触发一个特定的 'onUserOffline' 事件
+                this._trigger('onUserOffline', statusUpdate);
+            });
+        }
+    }
+
     _subscribeToPrivate() { 
         const destination = '/user/queue/private'; // 用户需要订阅这个地址来接收私信
         if (!this.subscriptions[destination] && this.stompClient.value?.connected) {
@@ -354,7 +556,7 @@ class StompClientWrapper {
                         console.log('[StompClientWrapper] 解析后的私人消息:', parsedMessage);
                         
                         // 确保消息包含必要字段
-                        if (!parsedMessage.fromUserId || !parsedMessage.content) {
+                        if (!parsedMessage.senderId || !parsedMessage.content) {
                             console.warn('[StompClientWrapper] 接收到的私人消息缺少必要字段:', parsedMessage);
                         }
                         
@@ -377,12 +579,97 @@ class StompClientWrapper {
         }
     }
 
+    _subscribeToSystem() {
+        const destination = '/user/queue/system'; // 修改为用户专属的系统消息队列
+        if (!this.subscriptions[destination] && this.stompClient.value?.connected) {
+            try {
+                console.log(`[StompClientWrapper] 正在订阅系统消息频道 ${destination}，当前用户ID: ${this.currentUserId.value}`);
+                
+                this.subscriptions[destination] = this.stompClient.value.subscribe(destination, (message) => {
+                    try {
+                        console.log('[StompClientWrapper] 收到系统消息:', message);
+                        const parsedMessage = JSON.parse(message.body);
+                        console.log('[StompClientWrapper] 解析后的系统消息:', parsedMessage);
+                        
+                        // 处理不同类型的系统消息
+                        if (parsedMessage.type === 'friendRequest') {
+                            // 收到好友请求，添加到好友请求列表
+                            this._handleFriendRequest(parsedMessage);
+                        }
+                        
+                        // 触发系统消息事件
+                        this._trigger('onSystemMessage', parsedMessage);
+                    } catch (e) {
+                        console.error('[StompClientWrapper] 解析系统消息出错:', e, message.body);
+                    }
+                });
+                
+                console.log(`[StompClientWrapper] 已成功订阅系统消息频道 ${destination}`);
+            } catch(e) {
+                console.error(`[StompClientWrapper] 订阅 ${destination} 失败:`, e);
+                this._trigger('onError', `订阅系统消息频道失败: ${e.message}`);
+            }
+        }
+    }
+
+    // 处理好友请求
+    _handleFriendRequest(message) {
+        // 确保friendRequests已初始化
+        if (!this.friendRequests.value) {
+            this.friendRequests.value = [];
+        }
+        
+        // 检查是否包含完整的FriendsResponse对象
+        if (message.friendsResponse) {
+            // 使用后端提供的FriendsResponse对象
+            const friendRequest = message.friendsResponse;
+            
+            // 检查是否已存在相同的请求
+            const exists = this.friendRequests.value.some(req => 
+                req.firstUserId === friendRequest.firstUserId && 
+                req.secondUserId === friendRequest.secondUserId
+            );
+            
+            // 如果不存在，添加到列表
+            if (!exists) {
+                this.friendRequests.value.push(friendRequest);
+                console.log('[StompClientWrapper] 添加新好友请求:', friendRequest);
+            }
+        } else {
+            // 兼容旧格式：手动构建FriendsResponse对象
+            const friendRequest = {
+                firstUserId: message.senderId?.toString(),
+                secondUserId: this.currentUserId.value,
+                firstUsername: message.senderUsername,
+                secondUsername: this.currentUser.value,
+                created_at: new Date(message.timestamp),
+                status: 'requested'
+            };
+            
+            // 检查是否已存在相同的请求
+            const exists = this.friendRequests.value.some(req => 
+                req.firstUserId === friendRequest.firstUserId && 
+                req.secondUserId === friendRequest.secondUserId
+            );
+            
+            // 如果不存在，添加到列表
+            if (!exists) {
+                this.friendRequests.value.push(friendRequest);
+                console.log('[StompClientWrapper] 添加新好友请求(旧格式):', friendRequest);
+            }
+        }
+    }
+
     // --- 发送消息 ---
     sendPublicMessage(content, groupId) {
-        if (!this.isConnected.value) { // 如果未连接，则不发送消息
-            console.warn('[StompClientWrapper] Cannot send message, not connected.');
-            return;
+        // 增强连接状态检查
+        if (!this.isConnected.value || !this.stompClient.value || !this.stompClient.value.connected) {
+            const errorMsg = '未连接到WebSocket服务器，无法发送消息';
+            console.warn('[StompClientWrapper] ' + errorMsg);
+            this._trigger('onError', errorMsg);
+            return false;
         }
+        
         const destination = '/app/chat/channel'; // 发送到后端的 @MessageMapping
         try {
             this.stompClient.value.publish({ 
@@ -393,48 +680,58 @@ class StompClientWrapper {
                     'group-id': groupId
                 }
             });
-             console.log(`[StompClientWrapper] Sent public message to ${destination}:`, { content, groupId });
+            console.log(`[StompClientWrapper] Sent public message to ${destination}:`, { content, groupId });
+            return true;
         } catch (e) {
             console.error(`[StompClientWrapper] Failed to send public message to ${destination}:`, e);
-            this._trigger('onError', `Failed to send public message: ${e.message}`);
+            this._trigger('onError', `发送群组消息失败: ${e.message}`);
+            return false;
         }
     }
 
-    sendPrivateMessage(toUser, content,toUserName) {
-        if (!this.isConnected.value) {
-            console.warn('[StompClientWrapper] 未连接到服务器，无法发送消息');
-            return;
+    sendPrivateMessage(toUserId, content, toUserName) {
+        // 增强连接状态检查
+        if (!this.isConnected.value || !this.stompClient.value || !this.stompClient.value.connected) {
+            const errorMsg = '未连接到WebSocket服务器，无法发送消息';
+            console.warn('[StompClientWrapper] ' + errorMsg);
+            this._trigger('onError', errorMsg);
+            return false;
         }
-        if (!toUser || !content) {
-            console.warn('[StompClientWrapper] 发送私人消息需要提供接收者和内容');
-            return;
+        
+        if (!toUserId || !content) {
+            const errorMsg = '发送私人消息需要提供接收者ID和内容';
+            console.warn('[StompClientWrapper] ' + errorMsg);
+            this._trigger('onError', errorMsg);
+            return false;
         }
-        const destination = '/app/chat/private'; // 发送到后端的 @MessageMapping
+        
+        const destination = '/app/chat/private'; 
         try {
-            // 确保消息格式与后端PrivateChatMessage类匹配
-            const message = {
-                toUserId: toUser,          // 接收者ID，这是必需的
-                content: content,          // 消息内容，这是必需的
-                fromUserId: this.currentUserId.value,  // 这个在后端会被覆盖，但前端先设置
-                fromUser: this.currentUser.value,       // 这个在后端会被覆盖，但前端先设置
-                toUser: toUserName
+            // Corrected payload to match backend expectation (receiverId and content)
+            const messagePayload = {
+                receiverId: toUserId,   // Use receiverId to match backend getter
+                content: content           // Content is essential
+                // fromUserId, fromUser, toUser are likely set by backend or irrelevant in payload
             };
             
-            console.log('[StompClientWrapper] 准备发送私人消息:', message);
+            console.log('[StompClientWrapper] 准备发送私人消息 payload:', messagePayload);
             
             this.stompClient.value.publish({ 
                 destination: destination,
-                body: JSON.stringify(message),
+                body: JSON.stringify(messagePayload),
+                // Headers might still be useful for context or middleware, but payload is key
                 headers: {
-                    'user-id': this.currentUserId.value,
-                    'from-user': this.currentUser.value,
-                    'to-user': toUser  // 在消息头中也设置接收者ID
+                    'user-id': this.currentUserId.value, // Redundant if principal is used backend
+                    'from-user': this.currentUser.value, // Redundant if principal is used backend
+                    // 'to-user-id': toUserId // Can be kept if useful for backend logging/routing logic
                 }
             });
-            console.log(`[StompClientWrapper] 已发送私人消息到 ${destination}，接收者ID: ${toUser}`);
+            console.log(`[StompClientWrapper] 已发送私人消息到 ${destination}，接收者ID: ${toUserId}`);
+            return true;
         } catch (e) {
             console.error(`[StompClientWrapper] 发送私人消息失败:`, e);
             this._trigger('onError', `发送私人消息失败: ${e.message}`);
+            return false;
         }
     }
 }
