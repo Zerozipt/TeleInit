@@ -45,6 +45,12 @@ const router = createRouter({
                     path: 'contacts',
                     name: 'index-contacts',
                     component: () => import('@/views/ContactsView.vue')
+                },
+                {
+                    path: 'group/:id',
+                    name: 'group-detail',
+                    component: () => import('@/views/components/group/GroupDetailView.vue'),
+                    props: true
                 }
             ]
         }

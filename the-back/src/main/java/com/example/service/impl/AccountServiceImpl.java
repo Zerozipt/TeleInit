@@ -10,7 +10,7 @@ import com.example.utils.Const;
 import com.example.utils.FlowUtils;
 import jakarta.annotation.Resource;
 import org.springframework.amqp.core.AmqpTemplate;
-import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.core.userdetails.User;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.core.userdetails.UsernameNotFoundException;
@@ -29,6 +29,8 @@ import com.example.mapper.FriendsMapper;
 import com.example.entity.dto.Friends;
 import com.example.mapper.Group_memberMapper;
 import com.example.entity.dto.Group_member;
+import com.example.service.VerificationCodeService;
+import com.example.utils.RedisKeys;
 @Service //extends ServiceImpl<AccountMapper, Account> implements AccountService
 public class AccountServiceImpl extends ServiceImpl<AccountMapper, Account> implements AccountService {
 
@@ -44,13 +46,13 @@ public class AccountServiceImpl extends ServiceImpl<AccountMapper, Account> impl
     AmqpTemplate amqpTemplate;
 
     @Resource
-    StringRedisTemplate stringRedisTemplate;
-
-    @Resource
     FriendsMapper friendsMapper;
 
     @Resource
     Group_memberMapper groupMemberMapper;
+
+    @Autowired
+    private VerificationCodeService verificationCodeService;
 
     //修改security的loadUserByUsername方法
     //我们这个业务只允许邮箱登录，因为我们不限制用户名唯一
@@ -133,26 +135,24 @@ public class AccountServiceImpl extends ServiceImpl<AccountMapper, Account> impl
             int code = random.nextInt(899999) + 100000;
             Map<String, Object> data = Map.of("type", type, "email", email, "code", code);
             amqpTemplate.convertAndSend("email", data);
-            //将验证码存入redis
-            stringRedisTemplate.opsForValue()
-                    .set(Const.VERIFY_EMAIL_Data + email, String.valueOf(code),
-                            3, TimeUnit.MINUTES);
+            // 将验证码存入 Redis
+            verificationCodeService.saveEmailCode(email, String.valueOf(code), java.time.Duration.ofMinutes(3));
             return null;
         }
     }
 
     //这个方法的作用是限制用户在60秒内只能发送1次验证码
     private boolean verifyLimit(String address){
-        String key = Const.VERIFY_EMAIL_LIMIT + address;
+        String key = RedisKeys.RATE_LIMIT_ONCE + address;
         return flowUtils.limitOnceCheck(key,60);
     }
 
     @Override
     public String registerEmailAccount(EmailRegisterVO vo) {
         String email = vo.getEmail();
-        //从redis中获取验证码
+        // 从 Redis 中获取验证码
         System.out.println(vo.getCode());
-        String code = stringRedisTemplate.opsForValue().get(Const.VERIFY_EMAIL_Data + email);
+        String code = verificationCodeService.getEmailCode(email);
         if(code == null){
             return "请先获取验证码";
         }
@@ -176,19 +176,19 @@ public class AccountServiceImpl extends ServiceImpl<AccountMapper, Account> impl
         account.setRole("user");
         account.setRegister_time(new Date());
         if(this.save(account)){
-            //删除redis中的验证码
-            stringRedisTemplate.delete(Const.VERIFY_EMAIL_Data + email);
+            // 删除 Redis 中的验证码
+            verificationCodeService.deleteEmailCode(email);
             return null;
         }else{
-            stringRedisTemplate.delete(Const.VERIFY_EMAIL_Data + email);
+            verificationCodeService.deleteEmailCode(email);
             return "内部错误，注册失败";
         }
     }
     
     @Override
     public String updatePasswordDueToForget(String email,String newPassword,String code){
-        //从redis中获取验证码
-        String codeInRedis = stringRedisTemplate.opsForValue().get(Const.VERIFY_EMAIL_Data + email);
+        // 从 Redis 中获取验证码
+        String codeInRedis = verificationCodeService.getEmailCode(email);
         if(codeInRedis == null){
             return "请先获取验证码";
         }
@@ -199,19 +199,18 @@ public class AccountServiceImpl extends ServiceImpl<AccountMapper, Account> impl
         if(!this.existsAccountByEmail(email)){
             return "邮箱不存在";
         }
-        //将新密码进行加密
-        String encodedPassword = passwordEncoder.encode(newPassword);
-        //更新密码
-        String result = this.updatePasswordByEmail(email, encodedPassword);
-        if(result.equals("success")){
-            //删除redis中的验证码
-            stringRedisTemplate.delete(Const.VERIFY_EMAIL_Data + email);
-            return null;
-        }else{
-            stringRedisTemplate.delete(Const.VERIFY_EMAIL_Data + email);
-            return result;
+        // 删除验证码
+        verificationCodeService.deleteEmailCode(email);
+        try{
+            this.update()
+                .eq("email", email)
+                .set("password", newPassword)
+                .update();
+            return "success";
+        }catch(DataAccessException e){
+            //返回具体错误信息
+            return e.getMessage();
         }
-
     }
 
     @Override

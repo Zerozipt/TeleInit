@@ -6,11 +6,11 @@ import com.auth0.jwt.algorithms.Algorithm;
 import com.auth0.jwt.exceptions.JWTVerificationException;
 import com.auth0.jwt.interfaces.Claim;
 import com.auth0.jwt.interfaces.DecodedJWT;
-import jakarta.annotation.Resource;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.data.redis.core.StringRedisTemplate;
+import com.example.service.RedisService;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.userdetails.User;
 import org.springframework.security.core.userdetails.UserDetails;
@@ -21,6 +21,7 @@ import java.util.Date;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
+import java.time.Duration;
 
 @Component
 public class JwtUtils {
@@ -30,8 +31,8 @@ public class JwtUtils {
     @Value("${spring.security.jwt.expire}")
     int expire;
 
-    @Resource
-    StringRedisTemplate template;
+    @Autowired
+    private RedisService redisService;
 
     // ★★★ 添加 Logger 实例 ★★★
     private static final Logger logger = LoggerFactory.getLogger(JwtUtils.class);
@@ -74,7 +75,7 @@ public class JwtUtils {
         Date now = new Date();
         // 计算令牌剩余的有效时间
         long expire = Math.max(time.getTime() - now.getTime(), 0);
-        template.opsForValue().set(Const.JWT_BLACK_LIST + uuid, "", expire, TimeUnit.MILLISECONDS);
+        redisService.set(RedisKeys.JWT_BLACKLIST + uuid, "", Duration.ofMillis(expire));
         return true;
     }
 
@@ -94,17 +95,15 @@ public class JwtUtils {
         }
 
         // 构造要检查的 Redis Key
-        String keyToCheck = Const.JWT_BLACK_LIST + uuid;
+        String keyToCheck = RedisKeys.JWT_BLACKLIST + uuid;
         // ★★★ 日志：将要检查的 Redis Key ★★★
         logger.debug("准备对 Redis 进行黑名单检查，Key: {}", keyToCheck);
 
-        Boolean exists = null; // 用于存储 Redis 操作结果
+        boolean exists;
         try {
-            // ★★★ 执行 Redis 检查 ★★★
-            exists = template.hasKey(keyToCheck);
+            exists = redisService.exists(keyToCheck);
             // ★★★ 日志：Redis 检查的实际结果 ★★★
-            logger.debug("Redis 检查结果 template.hasKey('{}'): {}", keyToCheck, exists);
-
+            logger.debug("Redis 检查结果 redisService.exists('{}'): {}", keyToCheck, exists);
         } catch (Exception e) {
             // ★★★ 日志：捕获 Redis 操作可能发生的异常 ★★★
             logger.error("在检查 Redis Key '{}' 时发生异常", keyToCheck, e);
@@ -115,7 +114,7 @@ public class JwtUtils {
 
         // 根据 Redis 返回结果判断 Token 是否无效
         // 注意：template.hasKey 可能返回 null (虽然较少见)，所以用 Boolean.TRUE.equals 更安全
-        boolean isInvalid = Boolean.TRUE.equals(exists);
+        boolean isInvalid = exists;
 
         // ★★★ 日志：方法最终的返回值 ★★★
         logger.debug("isInvalidToken 方法返回: {}", isInvalid);

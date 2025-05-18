@@ -25,14 +25,25 @@
         v-for="item in contacts"
         :key="itemKey(item)"
         class="contact-item"
-        :class="{ active: isContactActive(item) }"
+        :class="{ 
+          active: isContactActive(item),
+          'has-unread': hasUnread(item)
+        }"
         @click="selectContact(item)"
       >
-        <el-avatar :size="40" :style="avatarStyle(item)">
-          {{ getInitial(item) }}
-        </el-avatar>
+        <div class="avatar-container">
+          <el-avatar :size="40" :style="avatarStyle(item)">
+            {{ getInitial(item) }}
+          </el-avatar>
+          <div v-if="getUnreadCount(item) > 0" class="unread-badge">
+            {{ getUnreadCount(item) > 99 ? '99+' : getUnreadCount(item) }}
+          </div>
+        </div>
         <div class="contact-info">
           <div class="contact-name">{{ getName(item) }}</div>
+          <div v-if="getLatestMessage(item)" class="message-preview">
+            {{ getLatestMessage(item) }}
+          </div>
         </div>
       </div>
       <div v-if="contacts.length === 0" class="empty-tip">
@@ -49,35 +60,29 @@ import { Search } from '@element-plus/icons-vue';
 const props = defineProps({
   currentUser: String,
   currentUserAvatar: String,
+  userId: String,
   friends: Array,
   groups: Array,
   selectedContact: Object,
   chatType: String,
+  unreadMessages: {
+    type: Map,
+    default: () => new Map()
+  },
+  latestMessages: {
+    type: Map,
+    default: () => new Map()
+  }
 });
 
 const emit = defineEmits(['select-contact']);
 
 const localSearchTerm = ref('');
 
-// 获取当前用户ID (假设来自localStorage或父组件)
-const getCurrentUserId = () => {
-  try {
-    const authData = localStorage.getItem('authorize');
-    if (authData) {
-      const parsedAuth = JSON.parse(authData);
-      return parsedAuth?.id || '';
-    }
-  } catch (e) {
-    console.error("Error parsing auth data:", e);
-  }
-  return '';
-};
-
-const currentUserId = computed(() => getCurrentUserId());
-
 // 判断好友关系中当前用户是first还是second
 const isCurrentUserFirst = (friend) => {
-  return friend.firstUserId === currentUserId.value;
+  const result = String(friend.firstUserId) === String(props.userId);
+  return result;
 };
 
 // 获取好友对象中对方的用户ID
@@ -194,6 +199,27 @@ const getName = (item) => {
   if (item.__type === 'private') return getFriendUsername(item) || '';
   if (item.__type === 'group') return item.groupName || '';
   return '';
+};
+
+// 获取未读消息数
+const getUnreadCount = (item) => {
+  const key = item.__type === 'private'
+    ? getFriendUserId(item) 
+    : item.groupId;
+  return props.unreadMessages.get(key) || 0;
+};
+
+// 判断是否有未读消息
+const hasUnread = (item) => {
+  return getUnreadCount(item) > 0;
+};
+
+// 获取最近一条消息
+const getLatestMessage = (item) => {
+  const key = item.__type === 'private'
+    ? getFriendUserId(item) 
+    : item.groupId;
+  return props.latestMessages.get(key) || '';
 };
 
 // Watch for prop changes if needed, e.g., to reset search or tab
@@ -391,4 +417,44 @@ const getName = (item) => {
 /* .contact-item.active { */
 /*   animation: float 3s ease-in-out infinite; */
 /* } */
+
+.avatar-container {
+  position: relative;
+}
+
+.unread-badge {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  background-color: #f56c6c;
+  color: white;
+  border-radius: 10px;
+  padding: 0 6px;
+  height: 20px;
+  min-width: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+
+.message-preview {
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 200px;
+  margin-top: 4px;
+}
+
+.contact-item.has-unread {
+  background-color: rgba(64, 158, 255, 0.1);
+}
+
+.contact-item.has-unread .message-preview {
+  color: var(--text-color);
+  font-weight: 500;
+}
 </style> 

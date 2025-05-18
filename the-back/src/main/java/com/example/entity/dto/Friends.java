@@ -22,6 +22,7 @@ public class Friends {
     public enum Status {
         requested,
         accepted,
+        rejected,
         deleted
     }
 }

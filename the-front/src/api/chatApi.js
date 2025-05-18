@@ -42,28 +42,42 @@ apiClient.interceptors.request.use(
  * @param {number} limit 最大消息数量
  * @returns {Promise<Array>} 消息列表
  */
-export const getPrivateChatHistory = async (user1, user2, limit = 50) => {
+export const getPrivateChatHistory = async (user1, user2, limit = 50, oldestMessageId) => {
     try {
-        //使id转换为字符串
         const userId = String(user1);
         const friendId = String(user2);
-        console.log(`尝试获取私聊历史: /chat/history/private, 参数: user1=${userId}, user2=${friendId}, limit=${limit}`);
+        console.log(`尝试获取私聊历史: /chat/history/private, 参数: user1=${userId}, user2=${friendId}, limit=${limit}, oldestMessageId=${oldestMessageId}`);
+        
         const response = await apiClient.get(`/chat/history/private`, {
-            params: { userId, friendId, limit }
+            params: { userId, friendId, limit, oldestMessageId }
         });
-        console.log(`获取私聊历史响应: ${JSON.stringify(response.data)}`);
-        //后端发送来的数据是json对象，需要转换为数组，jsonObject.put("privateMessages", JSON.toJSONString(friendMessages));
-        const jsonObject = JSON.parse(response.data.data);
-        const privateMessages = jsonObject.privateMessages;
-        if (response.data.code === 200) {
-            return privateMessages || [];
-        } else {
-            throw new Error(response.data.message || '获取私聊记录失败');
+        
+        console.log(`获取私聊历史响应:`, response.data);
+        
+        let privateMessages = [];
+        if (response.data.data) {
+            if (typeof response.data.data === 'string') {
+                try {
+                    const jsonObject = JSON.parse(response.data.data);
+                    privateMessages = jsonObject.privateMessages || [];
+                } catch (e) {
+                    console.error("解析私聊历史JSON失败:", e);
+                }
+            } else {
+                privateMessages = response.data.data.privateMessages || [];
+            }
         }
+        
+        return privateMessages;
     } catch (error) {
+        // 如果是400错误，表示没有更多历史记录
+        if (error.response && error.response.status === 400) {
+            console.log("没有更多历史记录");
+            return []; // 返回空数组而不是抛出错误
+        }
+        
         console.error("获取私聊记录失败:", error);
-        const errorMsg = error.response?.data?.message || error.message || '获取私聊记录失败';
-        throw new Error(errorMsg);
+        throw error; // 其他错误仍然抛出
     }
 };
 

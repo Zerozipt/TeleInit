@@ -28,7 +28,6 @@ const defaultFailure = (message, status, url) => {
 function takeAccessToken() {
     const str = localStorage.getItem(authItemName) || sessionStorage.getItem(authItemName);
     if(!str){
-        router.push({ name: 'welcome-login' })
         return null
     }
     const authObj = JSON.parse(str)
@@ -122,7 +121,11 @@ function logout(success, failure = defaultFailure){
         deleteAccessToken()
         ElMessage.success(`退出登录成功，欢迎您再次使用`)
         success()
-    }, failure)
+    }, failure=>{
+        deleteAccessToken()
+        router.push({ name: 'welcome-login' })
+        ElMessage.error(failure)
+    })
 }
 
 function get(url, success, failure = defaultFailure) {

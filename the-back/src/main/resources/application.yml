@@ -4,9 +4,9 @@ spring:
     username: TelesImitators@163.com
     password: ZPphC36rh8dg54Rv
   rabbitmq:
-    addresses: 154.64.254.111
+    addresses: 175.178.18.145
     username: admin
-    password: admin
+    password: 124578aA
     virtual-host: /
   security:
     jwt:
@@ -14,18 +14,40 @@ spring:
       expire : 7
   data:
     redis:
-      port: 6379
-      host: 154.64.254.111
+      port: 26739
+      host: 175.178.18.145
       password: 124578aA
       username: default
+      timeout: 30000
+      lettuce:
+        pool:
+          max-active: 8
+          max-idle: 8
+          min-idle: 0
+          max-wait: 1000ms
   datasource:
-    url: jdbc:mysql://154.64.254.111:3306/test
+    url: jdbc:mysql://175.178.18.145:13306/test
     username: root
     password: 124578aA
     driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      connection-timeout: 30000
+      idle-timeout: 60000
+      max-lifetime: 300000
+      minimum-idle: 10
+      pool-name: TeleInit
+      connection-test-query: SELECT 1
+  servlet:
+    multipart:
+      max-file-size: 100MB
+      max-request-size: 120MB
 #logging:
 #  level:
 #    com.example.filter.JwtAuthorizeFilter: DEBUG
 #    com.example.utils.JwtUtils: DEBUG
+
+file:
+  upload-dir: ${user.home}/uploads
+  base-access-url: /uploads
 
 

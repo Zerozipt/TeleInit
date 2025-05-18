@@ -35,7 +35,7 @@
         <el-button type="primary" @click="startChat">
           {{ type === 'private' ? '发消息' : '进入群聊' }}
         </el-button>
-        <el-button type="danger">
+        <el-button type="danger" @click="type === 'private' ? handleDelete() : handleExitGroup()">
           {{ type === 'private' ? '删除好友' : '退出群组' }}
         </el-button>
       </div>
@@ -51,6 +51,9 @@
 import { computed } from 'vue';
 import { User, ChatLineRound } from '@element-plus/icons-vue';
 import { useRouter } from 'vue-router';
+import { deleteFriend } from '@/api/friendApi';
+import { exitGroup } from '@/api/groupApi';
+import { ElMessage } from 'element-plus';
 
 const router = useRouter();
 
@@ -99,6 +102,24 @@ const startChat = () => {
       id: props.type === 'private' ? props.contact.userId : props.contact.groupId
     }
   });
+};
+
+// 删除好友处理
+const handleDelete = async () => {
+  try {
+    await deleteFriend(props.contact.userId);
+  } catch (error) {
+    console.error('删除好友失败:', error);
+  }
+};
+
+// 退出群组处理
+const handleExitGroup = async () => {
+  try {
+    await exitGroup(props.contact.groupId);
+  } catch (error) {
+    console.error('退出群组失败:', error);
+  }
 };
 </script>
 

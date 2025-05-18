@@ -34,7 +34,13 @@ export default defineConfig({
           changeOrigin: true,  
           secure: false,  
           ws: true // 如果需要代理 WebSocket  
-      }  
+      },  
+      '/api': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+        secure: false,
+        // 不代理 WebSocket
+      }
     }  
   }  
 })

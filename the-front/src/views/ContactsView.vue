@@ -2,6 +2,10 @@
   <div class="contacts-view-container">
     <!-- Left: Contact List Sidebar -->
     <ContactListSidebar
+      :friends="friends"
+      :groups="groups"
+      :friend-requests="friendRequests"
+      :current-user-id="currentUserId"
       @select-contact="handleSelectContact"
       @show-notifications="handleShowNotifications"
       @show-add-friend="handleShowAddFriend"
@@ -10,11 +14,19 @@
     
     <!-- Right: Detail Area -->
     <div class="detail-area">
-      <!-- 好友/群组详情 -->
+      <!-- 好友详情 -->
       <ContactDetail
         :contact="selectedContact || null"
         :type="contactType"
-        v-if="selectedContact && !showAddFriendPanel && !showGroupPanel"
+        v-if="selectedContact && contactType === 'private' && !showAddFriendPanel && !showGroupPanel && !showNotifications"
+      />
+      
+      <!-- 群组详情面板 -->
+      <GroupDetailPanel
+        v-if="selectedContact && contactType === 'group' && !showAddFriendPanel && !showGroupPanel && !showNotifications"
+        :group-id="selectedContact.groupId"
+        @invite-friend="handleInviteFriend"
+        @exit-group="handleExitGroupFromDetail"
       />
       
       <!-- 通知详情层 -->
@@ -34,6 +46,11 @@
         <NotificationDetail
           :type="notificationType"
           :notifications="notifications"
+          @friend-request-accepted="handleFriendRequestAccepted"
+          @friend-request-rejected="handleFriendRequestRejected"
+          @friend-request-cancelled="handleFriendRequestCancelled"
+          @group-invitation-accepted="handleGroupInvitationAccepted"
+          @group-invitation-rejected="handleGroupInvitationRejected"
         />
       </div>
       
@@ -80,6 +97,36 @@
         <el-empty description="请从联系人中选择或查看通知" />
       </div>
     </div>
+
+    <!-- 邀请好友加入群组对话框 -->
+    <el-dialog
+      v-model="inviteDialogVisible"
+      title="邀请好友加入群组"
+      width="500px"
+    >
+      <el-form :model="inviteForm" @submit.prevent="handleInviteSubmit">
+        <el-alert
+          title="注意: 只能邀请已是你好友的用户"
+          type="warning"
+          :closable="false"
+          style="margin-bottom: 15px"
+        />
+        <el-form-item label="选择好友" prop="friendId">
+          <el-select v-model="inviteForm.friendId" placeholder="选择好友" style="width: 100%">
+            <el-option 
+              v-for="friend in availableFriends" 
+              :key="friend.friendId" 
+              :label="friend.friendName" 
+              :value="friend.friendId"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item>
+          <el-button type="primary" native-type="submit" :loading="inviteLoading">发送邀请</el-button>
+          <el-button @click="inviteDialogVisible = false">取消</el-button>
+        </el-form-item>
+      </el-form>
+    </el-dialog>
   </div>
 </template>
 
@@ -92,6 +139,8 @@ import ContactDetail from './components/contacts/ContactDetail.vue';
 import NotificationDetail from './components/contacts/NotificationDetail.vue';
 import AddFriendContent from './components/chat/AddFriendContent.vue';
 import GroupContent from './components/chat/GroupContent.vue';
+import GroupDetailPanel from './components/group/GroupDetailPanel.vue';
+import { inviteUserToGroup } from '@/api/groupApi';
 import { ElMessage, ElNotification } from 'element-plus';
 
 // 联系人相关
@@ -107,14 +156,55 @@ const showNotifications = ref(false);
 const showAddFriendPanel = ref(false);
 const showGroupPanel = ref(false);
 
+// 邀请好友对话框状态
+const inviteDialogVisible = ref(false);
+const inviteForm = ref({ friendId: null });
+const inviteLoading = ref(false);
+
 // 当前用户ID
 const currentUserId = computed(() => stompClientInstance.currentUserId.value);
 
 // 直接从 WebSocket 实例获取好友列表
 const friends = computed(() => stompClientInstance.friends.value);
 
+// 新增：直接从 WebSocket 实例获取群组列表
+const groups = computed(() => stompClientInstance.groups.value);
+
 // 从WebSocket实例获取好友请求列表
 const friendRequests = computed(() => stompClientInstance.friendRequests.value);
+
+// 可邀请好友列表（已过滤掉当前群组成员）
+const availableFriends = computed(() => {
+  const allFriends = friends.value || [];
+  
+  // 如果选中的是群组，过滤掉已经在群组中的好友
+  if (selectedContact.value && contactType.value === 'group') {
+    // 这里应该通过API获取当前群组成员ID列表
+    // 临时使用空数组
+    const groupMembers = []; 
+    
+    return allFriends.filter(friend => {
+      // 获取好友ID
+      const friendId = friend.firstUserId === currentUserId.value ? friend.secondUserId : friend.firstUserId;
+      // 排除已在群组中的好友
+      return !groupMembers.includes(friendId);
+    }).map(friend => {
+      const isFirst = friend.firstUserId === currentUserId.value;
+      return {
+        friendId: isFirst ? friend.secondUserId : friend.firstUserId,
+        friendName: isFirst ? friend.secondUsername : friend.firstUsername
+      };
+    });
+  }
+  
+  return allFriends.map(friend => {
+    const isFirst = friend.firstUserId === currentUserId.value;
+    return {
+      friendId: isFirst ? friend.secondUserId : friend.firstUserId,
+      friendName: isFirst ? friend.secondUsername : friend.firstUsername
+    };
+  });
+});
 
 // 处理选择联系人
 const handleSelectContact = (contact, type) => {
@@ -167,60 +257,252 @@ const handleShowGroupDialog = () => {
   selectedContact.value = null;
 };
 
-// 处理好友请求发送成功
-const handleFriendRequestSent = (userId) => {
+// 处理好友请求接受
+const handleFriendRequestAccepted = (friendRequest) => {
+  // 刷新好友列表 - 使用后端API
+  stompClientInstance.refreshFriends()
+    .then(() => {
+      console.log('好友列表刷新成功');
+    })
+    .catch(error => {
+      console.error('刷新好友列表失败:', error);
+    });
+    
+  // 刷新好友请求列表 - 使用后端API
+  stompClientInstance.refreshFriendRequests()
+    .then(requests => {
+      // 更新当前显示的通知列表
+      if (notificationType.value === 'friend') {
+        notifications.value = requests;
+      }
+      
+      // 如果请求列表为空，可以选择关闭通知面板
+      if (requests.length === 0 && showNotifications.value) {
+        setTimeout(() => {
+          showNotifications.value = false;
+        }, 1500);
+      }
+    })
+    .catch(error => {
+      console.error('刷新好友请求列表失败:', error);
+    });
+};
+
+// 处理好友请求拒绝
+const handleFriendRequestRejected = (friendRequest) => {
+  // 刷新好友请求列表 - 使用后端API
+  stompClientInstance.refreshFriendRequests()
+    .then(requests => {
+      // 更新当前显示的通知列表
+      if (notificationType.value === 'friend') {
+        notifications.value = requests;
+      }
+      
+      // 如果请求列表为空，可以选择关闭通知面板
+      if (requests.length === 0 && showNotifications.value) {
+        setTimeout(() => {
+          showNotifications.value = false;
+        }, 1500);
+      }
+    })
+    .catch(error => {
+      console.error('刷新好友请求列表失败:', error);
+    });
+};
+
+// 处理好友请求取消
+const handleFriendRequestCancelled = (friendRequest) => {
+  // 刷新好友请求列表 - 使用后端API
+  stompClientInstance.refreshFriendRequests()
+    .then(requests => {
+      // 更新当前显示的通知列表
+      if (notificationType.value === 'friend') {
+        notifications.value = requests;
+      }
+      
+      // 如果请求列表为空，可以选择关闭通知面板
+      if (requests.length === 0 && showNotifications.value) {
+        setTimeout(() => {
+          showNotifications.value = false;
+        }, 1500);
+      }
+    })
+    .catch(error => {
+      console.error('刷新好友请求列表失败:', error);
+    });
+};
+
+// 处理发送好友请求
+const handleFriendRequestSent = () => {
   ElMessage.success('好友请求已发送');
-  // 可以选择关闭面板
-  // showAddFriendPanel.value = false;
+  
+  // 可以选择关闭添加好友面板
+  setTimeout(() => {
+    showAddFriendPanel.value = false;
+  }, 1500);
 };
 
 // 处理群组创建成功
-const handleGroupCreated = (newGroup) => {
-  ElMessage.success(`群组 "${newGroup.name}" 创建成功`);
+const handleGroupCreated = (groupData) => {
+  ElMessage.success(`群组"${groupData.name}"创建成功`);
+  
   // 刷新群组列表
-  stompClientInstance.refreshGroups();
-  // 可以选择关闭面板
-  // showGroupPanel.value = false;
+  stompClientInstance.refreshGroups()
+    .then(() => {
+      console.log('群组列表刷新成功');
+    })
+    .catch(error => {
+      console.error('刷新群组列表失败:', error);
+    });
+    
+  // 可以选择关闭群组操作面板
+  setTimeout(() => {
+    showGroupPanel.value = false;
+  }, 1500);
 };
 
 // 处理加入群组成功
-const handleGroupJoined = (groupName) => {
-  ElMessage.success(`成功加入群组 "${groupName}"`);
+const handleGroupJoined = (groupData) => {
+  ElMessage.success(`成功加入群组"${groupData.groupName}"`);
+  
   // 刷新群组列表
-  stompClientInstance.refreshGroups();
-  // 可以选择关闭面板
-  // showGroupPanel.value = false;
+  stompClientInstance.refreshGroups()
+    .then(() => {
+      console.log('群组列表刷新成功');
+    })
+    .catch(error => {
+      console.error('刷新群组列表失败:', error);
+    });
+    
+  // 可以选择关闭群组操作面板
+  setTimeout(() => {
+    showGroupPanel.value = false;
+  }, 1500);
 };
 
-// 监听selectedContact变化，方便调试
-watch(selectedContact, (newVal) => {
-  console.log('selectedContact变化:', newVal);
-});
-
-// 监听WebSocket系统消息
-const handleSystemMessage = (message) => {
-  console.log('收到系统消息:', message);
+// 处理邀请好友加入群组
+const handleInviteFriend = () => {
+  if (!selectedContact.value || contactType.value !== 'group') {
+    ElMessage.error('没有选中群组');
+    return;
+  }
   
-  if (message.type === 'friendRequest') {
-    // 显示通知
-    ElNotification({
-      title: '新的好友请求',
-      message: `${message.senderUsername} 请求添加您为好友`,
-      type: 'info',
-      duration: 5000
-    });
+  inviteForm.value = { friendId: null };
+  inviteDialogVisible.value = true;
+};
+
+// 处理邀请提交
+const handleInviteSubmit = async () => {
+  if (!inviteForm.value.friendId) {
+    ElMessage.warning('请选择要邀请的好友');
+    return;
+  }
+  
+  inviteLoading.value = true;
+  try {
+    const success = await inviteUserToGroup(selectedContact.value.groupId, inviteForm.value.friendId);
+    if (success) {
+      inviteDialogVisible.value = false;
+      ElMessage.success('邀请已发送');
+    }
+  } catch (error) {
+    console.error('邀请好友失败:', error);
+    ElMessage.error(`邀请失败: ${error.message || '请稍后再试'}`);
+  } finally {
+    inviteLoading.value = false;
   }
 };
 
-// 组件挂载和卸载生命周期钩子
-onMounted(() => {
-  // 注册WebSocket系统消息监听
-  stompClientInstance.on('onSystemMessage', handleSystemMessage);
+// 处理群组邀请接受
+const handleGroupInvitationAccepted = async (invitation) => {
+  // 刷新群组列表
+  try {
+    await stompClientInstance.refreshGroups();
+    console.log('群组列表刷新成功');
+  } catch (error) {
+    console.error('刷新群组列表失败:', error);
+  }
+  // 刷新群组邀请列表并更新展示
+  try {
+    const invs = await stompClientInstance.refreshGroupInvitations();
+    console.log('群组邀请列表刷新成功', invs);
+    if (notificationType.value === 'group') {
+      notifications.value = invs;
+    }
+    if (!invs.length && showNotifications.value) {
+      setTimeout(() => showNotifications.value = false, 1500);
+    }
+  } catch (error) {
+    console.error('刷新群组邀请列表失败:', error);
+  }
+  // 关闭通知面板
+  showNotifications.value = false;
+};
+
+// 处理群组邀请拒绝
+const handleGroupInvitationRejected = async (invitation) => {
+  // 仅刷新邀请列表并更新展示
+  try {
+    const invs = await stompClientInstance.refreshGroupInvitations();
+    console.log('群组邀请列表刷新成功', invs);
+    if (notificationType.value === 'group') {
+      notifications.value = invs;
+    }
+    if (!invs.length && showNotifications.value) {
+      setTimeout(() => showNotifications.value = false, 1500);
+    }
+  } catch (error) {
+    console.error('刷新群组邀请列表失败:', error);
+  }
+};
+
+// 处理群组退出
+const handleExitGroupFromDetail = () => {
+  // 退出群组后清除选中并刷新群组列表
+  selectedContact.value = null;
+  contactType.value = '';
+  stompClientInstance.refreshGroups()
+    .then(() => console.log('群组列表已刷新'))
+    .catch(error => console.error('刷新群组列表失败:', error));
+};
+
+// 监听WebSocket连接状态
+watch(() => stompClientInstance.isConnected.value, (connected) => {
+  if (connected) {
+    console.log('[ContactsView] WebSocket已连接');
+  } else {
+    console.log('[ContactsView] WebSocket连接断开');
+  }
 });
 
-onUnmounted(() => {
-  // 移除WebSocket系统消息监听
-  stompClientInstance.off('onSystemMessage', handleSystemMessage);
+// 监听好友请求列表变化，如果正在查看好友通知，则更新通知面板内容
+watch(() => stompClientInstance.friendRequests.value, (newRequests) => {
+  if (showNotifications.value && notificationType.value === 'friend') {
+    notifications.value = newRequests;
+    console.log('好友请求列表更新，刷新通知面板:', newRequests);
+  }
+});
+
+// 监听群组邀请列表变化，如果正在查看群通知，则更新通知面板内容
+watch(() => stompClientInstance.groupInvitations.value, (newInvitations) => {
+  if (showNotifications.value && notificationType.value === 'group') {
+    notifications.value = newInvitations;
+    console.log('群组邀请列表更新，刷新通知面板:', newInvitations);
+  }
+});
+
+onMounted(() => {
+  // 如果WebSocket已连接，立即刷新一次好友列表和好友请求
+  if (stompClientInstance.isConnected.value) {
+    stompClientInstance.refreshFriends()
+      .catch(error => console.error('初始刷新好友列表失败:', error));
+      
+    stompClientInstance.refreshFriendRequests()
+      .catch(error => console.error('初始刷新好友请求列表失败:', error));
+      
+    stompClientInstance.refreshGroups()
+      .catch(error => console.error('初始刷新群组列表失败:', error));
+  }
 });
 </script>
 

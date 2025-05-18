@@ -3,6 +3,7 @@ import SockJS from 'sockjs-client/dist/sockjs.min.js'; // 确保路径正确
 import { Stomp } from '@stomp/stompjs';
 import { ref, shallowRef } from 'vue'; // 使用 shallowRef 优化 StompClient 实例
 import axios from 'axios'; // 导入axios用于HTTP请求
+import { getReceivedGroupInvitations } from '@/api/groupApi'; // 导入群组API
 
 const SOCKET_URL = 'http://localhost:8080/ws-chat'; // 后端 WebSocket 端点
 
@@ -27,6 +28,22 @@ function internalPost(url, data, headers, success, failure, error = defaultError
     });
 }
 
+// 简单的HTTP GET请求函数
+function internalGet(url, headers, success, failure, error = defaultError) {
+    axios.get(url, { headers: headers }).then(({ data }) => {
+        if (data.code === 200) {
+            success(data.data);
+        } else if (data.code === 401) {
+            failure(data.message);
+        } else {
+            failure(data.message, data.code, url);
+        }
+    }).catch(err => {
+        console.error('[internalGet] Request failed:', err);
+        error(err);
+    });
+}
+
 class StompClientWrapper {
     //constructor 意味着这个类被实例化时，会自动调用这个方法
     constructor() {
@@ -44,6 +61,8 @@ class StompClientWrapper {
         this.friends = ref([]);
         this.friendRequests = ref([]);
         this.groups = ref([]);
+        // 新增群组邀请列表
+        this.groupInvitations = ref([]);
         //群组消息的结构是二维数组，数组中每一项是一个Group_message对象的数组，代表一个群聊的聊天记录
         //对于这样的结构，为了方便前端显示，可以使用一个map来存储，key为群组id，value为群组消息的数组
         this.groupMessages = ref(new Map());
@@ -59,6 +78,10 @@ class StompClientWrapper {
             onPublicMessage: [],
             onPrivateMessage: [],
             onSystemMessage: [],
+            // 新增回调类型
+            friendRequestsUpdated: [],
+            onGroupInvitationsUpdated: [], // 新增群组邀请更新事件
+            showSystemNotification: []
         };
         // 添加这里 - 页面关闭事件监听
     if (typeof window !== 'undefined') {
@@ -90,16 +113,17 @@ class StompClientWrapper {
 
     // 刷新群组列表
     refreshGroups() {
+        console.log('[WebSocket] refreshGroups: CALLED');
         if (!this.isConnected.value || !this.stompClient.value?.connected) {
-            console.warn('[StompClientWrapper] 未连接到WebSocket服务器，无法刷新群组列表');
+            console.warn('[WebSocket] refreshGroups: Not connected, cannot refresh.');
             return Promise.reject(new Error('未连接到服务器'));
         }
 
         return new Promise((resolve, reject) => {
             try {
-                // 获取JWT令牌
                 const authData = localStorage.getItem('authorize');
                 if (!authData) {
+                    console.error('[WebSocket] refreshGroups: No authData in localStorage.');
                     return reject(new Error('用户未登录'));
                 }
                 
@@ -107,46 +131,127 @@ class StompClientWrapper {
                 const jwt = parsedAuth?.token;
                 
                 if (!jwt) {
+                    console.error('[WebSocket] refreshGroups: No JWT token found in parsedAuth.');
                     return reject(new Error('无效的认证信息'));
                 }
                 
-                // 调用后端API获取最新的群组列表
-                internalPost('/api/chat/GetGroups',
-                    null,
+                console.log('[WebSocket] refreshGroups: Calling backend /api/groups/getGroupMembers...');
+                internalPost('/api/groups/getGroupMembers',
+                    null, 
                     {
                         'Authorization': 'Bearer ' + jwt
                     },
-                    (data) => {
-                        if (!data) {
-                            console.error('[StompClientWrapper] 从服务器收到空数据');
-                            return reject(new Error('从服务器收到空数据'));
+                    (responseData) => { // Renamed data to responseData for clarity, this IS the List<Group_member>
+                        console.log('[WebSocket] refreshGroups: API call SUCCEEDED. Raw data received (expected List<Group_member>):', JSON.stringify(responseData));
+                        
+                        // Directly use responseData as it's the array of Group_member objects
+                        // No longer expecting a RestBean wrapper at this stage due to internalPost's behavior
+                        if (!responseData || !Array.isArray(responseData)) {
+                            console.error('[WebSocket] refreshGroups: Data received is not an array or is empty/null. Received:', responseData);
+                            this.groups.value = []; // Reset to empty array
+                            // Resolve with empty array if data is not as expected, or it might be an empty list from backend
+                            resolve([]); 
+                            return;
                         }
                         
-                        console.log('[StompClientWrapper] 刷新群组列表成功:', data);
-                        
+                        const groupMembers = responseData; 
+                        // console.log('[WebSocket] refreshGroups: Using received data directly as groupMembers:', JSON.stringify(groupMembers)); // Optional log
+
+                        // The rest of the transformation logic remains the same
                         try {
-                            // 更新群组列表
-                            this.groups.value = data || [];
+                            const transformedGroups = groupMembers.map(member => ({
+                                groupId: member.groupId,
+                                groupName: member.groupName,
+                                role: member.role
+                            }));
+                            console.log('[WebSocket] refreshGroups: Transformed groups for UI:', JSON.stringify(transformedGroups));
                             
-                            // 更新群组订阅
-                            this._subscribeToPublic();
+                            console.log('[WebSocket] refreshGroups: Current this.groups.value BEFORE update:', JSON.stringify(this.groups.value));
+                            this.groups.value = transformedGroups;
+                            console.log('[WebSocket] refreshGroups: Updated this.groups.value AFTER update:', JSON.stringify(this.groups.value));
+                            
+                            this._subscribeToPublic(); // Refresh subscriptions with potentially new groups
                             
                             resolve(this.groups.value);
                         } catch (e) {
-                            console.error('[StompClientWrapper] 处理群组数据出错:', e);
+                            console.error('[WebSocket] refreshGroups: Error processing or transforming group data:', e);
+                            this.groups.value = [];
                             reject(e);
                         }
                     },
-                    (errorMsg) => {
-                        console.error('[StompClientWrapper] 刷新群组列表失败:', errorMsg);
-                        reject(new Error(errorMsg));
+                    (errorMsg, errorStatus) => {
+                        console.error(`[WebSocket] refreshGroups: API call FAILED. Status: ${errorStatus}, Message:`, errorMsg);
+                        reject(new Error(errorMsg || '刷新群组列表失败'));
                     }
                 );
             } catch (e) {
-                console.error('[StompClientWrapper] refreshGroups方法异常:', e);
+                console.error('[WebSocket] refreshGroups: Exception in refreshGroups method:', e);
                 reject(e);
             }
         });
+    }
+
+    // 处理WebSocket获取的好友请求
+    _processFriendRequests(requests) {
+        if (!requests || !Array.isArray(requests)) {
+            console.warn('[StompClientWrapper] 收到的好友请求格式不正确:', requests);
+            return [];
+        }
+        
+        // 获取当前用户ID
+        const currentUserId = this.currentUserId.value;
+        
+        // 处理每个请求，标记是收到的还是发送的
+        return requests.map(request => {
+            const processed = { ...request };
+            
+            // 判断当前用户是否是接收者（secondUserId）或发送者（firstUserId）
+            const isReceiver = processed.secondUserId === currentUserId.toString();
+            const isSender = processed.firstUserId === currentUserId.toString();
+            
+            // 根据用户角色和后端状态确定前端显示状态
+            if (isReceiver) {
+                // 自己是接收者
+                if (processed.status === 'requested') {
+                    processed.displayStatus = 'requested';
+                } else if (processed.status === 'accepted') {
+                    processed.displayStatus = 'accepted';
+                } else if (processed.status === 'rejected') {
+                    processed.displayStatus = 'rejected';
+                } else if (processed.status === 'deleted') {
+                    processed.displayStatus = 'rejected';
+                }
+            } else if (isSender) {
+                // 自己是发送者
+                if (processed.status === 'requested') {
+                    processed.displayStatus = 'sent';
+                } else if (processed.status === 'accepted') {
+                    processed.displayStatus = 'accepted';
+                } else if (processed.status === 'rejected') {
+                    processed.displayStatus = 'rejected';
+                } else if (processed.status === 'deleted') {
+                    processed.displayStatus = 'rejected';
+                }
+            }
+            console.log('[StompClientWrapper] 处理好友请求成功:', processed);
+            return processed;
+        });
+    }
+
+    // 初始化处理好友请求列表
+    _handleInitialFriendRequests(data) {
+        try {
+            if (data.friendRequests) {
+                const parsedFriendRequests = JSON.parse(data.friendRequests) || [];
+                
+                // 处理并标记请求类型
+                this.friendRequests.value = this._processFriendRequests(parsedFriendRequests);
+                
+                console.log('[StompClientWrapper] 解析好友请求列表成功, 请求数量:', this.friendRequests.value.length);
+            }
+        } catch (e) {
+            console.error('[StompClientWrapper] 处理初始好友请求出错:', e);
+        }
     }
 
     // 将getUserInfByJwt移到类内部作为方法
@@ -209,10 +314,8 @@ class StompClientWrapper {
                                 console.log('[StompClientWrapper] 解析私聊消息列表成功, 私聊消息数量:', parsedPrivateMessages.length);
                             }
                             if(data.friendRequests){
-                                const parsedFriendRequests = JSON.parse(data.friendRequests) || [];
-                                this.friendRequests.value = parsedFriendRequests;
-                                console.log('[StompClientWrapper] 解析好友请求列表成功, 好友请求列表:', parsedFriendRequests);
-                                console.log('[StompClientWrapper] 解析好友请求列表成功, 好友请求数量:', parsedFriendRequests.length);
+                                // 使用新方法处理好友请求
+                                this._handleInitialFriendRequests(data);
                             }
                         } catch (parseError) {
                             console.error('[StompClientWrapper] 解析好友或群组数据出错:', parseError);
@@ -525,7 +628,19 @@ class StompClientWrapper {
             this.subscriptions[onlineDest] = this.stompClient.value.subscribe(onlineDest, (message) => {
                 const statusUpdate = JSON.parse(message.body);
                 console.log('[StompClientWrapper] User Online:', statusUpdate);
-                // 在这里触发一个特定的 'onUserOnline' 事件
+                
+                // 更新好友在线状态
+                const userId = statusUpdate.userId;
+                if (this.friends.value && this.friends.value.length > 0) {
+                    this.friends.value.forEach(friend => {
+                        if (friend.firstUserId === userId || friend.secondUserId === userId) {
+                            friend.online = true;
+                            console.log(`[StompClientWrapper] 设置好友 ${userId} 在线状态为: 在线`);
+                        }
+                    });
+                }
+                
+                // 触发事件通知
                 this._trigger('onUserOnline', statusUpdate); 
             });
         }
@@ -537,7 +652,19 @@ class StompClientWrapper {
             this.subscriptions[offlineDest] = this.stompClient.value.subscribe(offlineDest, (message) => {
                 const statusUpdate = JSON.parse(message.body);
                 console.log('[StompClientWrapper] User Offline:', statusUpdate);
-                 // 在这里触发一个特定的 'onUserOffline' 事件
+                
+                // 更新好友离线状态
+                const userId = statusUpdate.userId;
+                if (this.friends.value && this.friends.value.length > 0) {
+                    this.friends.value.forEach(friend => {
+                        if (friend.firstUserId === userId || friend.secondUserId === userId) {
+                            friend.online = false;
+                            console.log(`[StompClientWrapper] 设置好友 ${userId} 在线状态为: 离线`);
+                        }
+                    });
+                }
+                
+                // 触发事件通知
                 this._trigger('onUserOffline', statusUpdate);
             });
         }
@@ -580,7 +707,7 @@ class StompClientWrapper {
     }
 
     _subscribeToSystem() {
-        const destination = '/user/queue/system'; // 修改为用户专属的系统消息队列
+        const destination = '/user/queue/system'; // 系统消息队列，删除用户ID拼接
         if (!this.subscriptions[destination] && this.stompClient.value?.connected) {
             try {
                 console.log(`[StompClientWrapper] 正在订阅系统消息频道 ${destination}，当前用户ID: ${this.currentUserId.value}`);
@@ -595,6 +722,18 @@ class StompClientWrapper {
                         if (parsedMessage.type === 'friendRequest') {
                             // 收到好友请求，添加到好友请求列表
                             this._handleFriendRequest(parsedMessage);
+                        } else if (parsedMessage.type === 'friendAccept') {
+                            // 收到好友接受请求的通知
+                            this._handleFriendAccepted(parsedMessage);
+                        } else if (parsedMessage.type === 'friendRequestRejected') {
+                            this._handleFriendRequestRejected(parsedMessage);
+                        } else if (parsedMessage.type === 'friendRequestCancelledBySender') {
+                            this._handleFriendRequestCancelledBySender(parsedMessage);
+                        } else if (parsedMessage.type === 'groupInvite') {
+                            this._handleGroupInvite(parsedMessage);
+                        } else if (parsedMessage.type === 'friendRequestSent') {
+                            // 自己发送的好友请求消息
+                            this._handleFriendRequestSent(parsedMessage);
                         }
                         
                         // 触发系统消息事件
@@ -619,10 +758,51 @@ class StompClientWrapper {
             this.friendRequests.value = [];
         }
         
+        // 获取当前用户ID
+        const currentUserId = this.currentUserId.value;
+        
         // 检查是否包含完整的FriendsResponse对象
         if (message.friendsResponse) {
             // 使用后端提供的FriendsResponse对象
-            const friendRequest = message.friendsResponse;
+            const friendRequest = { ...message.friendsResponse };
+            
+            // 判断当前用户是否是接收者（secondUserId）或发送者（firstUserId）
+            const isReceiver = friendRequest.secondUserId === currentUserId.toString();
+            const isSender = friendRequest.firstUserId === currentUserId.toString();
+            
+            // 根据用户角色和后端状态确定前端显示状态
+            if (isReceiver) {
+                // 自己是接收者
+                if (friendRequest.status === 'requested') {
+                    // 收到的请求，保持'requested'状态
+                    friendRequest.displayStatus = 'requested';
+                } else if (friendRequest.status === 'accepted') {
+                    // 已接受的请求
+                    friendRequest.displayStatus = 'accepted';
+                } else if (friendRequest.status === 'rejected') {
+                    // 已拒绝的请求
+                    friendRequest.displayStatus = 'rejected';
+                } else if (friendRequest.status === 'deleted') {
+                    // If backend sends 'deleted' for a request (e.g. hard delete), 
+                    // we might still want to show it as 'rejected' or filter it out.
+                    // For now, let's also map it to 'rejected' to ensure it's handled consistently with old logic if 'deleted' is still somehow sent for requests.
+                    friendRequest.displayStatus = 'rejected'; 
+                }
+            } else if (isSender) {
+                // 自己是发送者
+                if (friendRequest.status === 'requested') {
+                    // 自己发送的等待回应的请求
+                    friendRequest.displayStatus = 'sent';
+                } else if (friendRequest.status === 'accepted') {
+                    // 对方已接受的请求
+                    friendRequest.displayStatus = 'accepted';
+                } else if (friendRequest.status === 'rejected') {
+                    // 被拒绝或已取消的请求
+                    friendRequest.displayStatus = 'rejected';
+                } else if (friendRequest.status === 'deleted') {
+                    friendRequest.displayStatus = 'rejected'; // Consistent handling for 'deleted'
+                }
+            }
             
             // 检查是否已存在相同的请求
             const exists = this.friendRequests.value.some(req => 
@@ -643,7 +823,8 @@ class StompClientWrapper {
                 firstUsername: message.senderUsername,
                 secondUsername: this.currentUser.value,
                 created_at: new Date(message.timestamp),
-                status: 'requested'
+                status: 'requested', // 旧格式都是收到的请求
+                displayStatus: 'requested' // 前端显示状态也是'requested'
             };
             
             // 检查是否已存在相同的请求
@@ -660,8 +841,428 @@ class StompClientWrapper {
         }
     }
 
+    // 处理好友请求被接受的消息
+    _handleFriendAccepted(message) {
+        try {
+            console.log('[StompClientWrapper] 收到好友接受通知:', message);
+            console.log('[StompClientWrapper] 当前好友列表:', this.friends.value);
+            console.log('[StompClientWrapper] 当前好友请求列表:', this.friendRequests.value);
+            
+            // 先从本地好友请求列表中移除已接受的请求
+            if (message.friendsResponse) {
+                const response = message.friendsResponse;
+                // 使用firstUserId(发送者)和secondUserId(接收者)过滤
+                this.friendRequests.value = this.friendRequests.value.filter(req => 
+                    !(req.firstUserId === response.firstUserId && 
+                      req.secondUserId === response.secondUserId)
+                );
+                console.log('[StompClientWrapper] 本地移除已接受的好友请求，更新后的请求列表:', this.friendRequests.value);
+            }
+            
+            // 使用后端API刷新好友列表和好友请求，而不是本地更新
+            // 刷新好友列表
+            this.refreshFriends()
+                .then((updatedFriends) => {
+                    console.log('[StompClientWrapper] 好友列表已刷新，新列表:', updatedFriends);
+                })
+                .catch(error => {
+                    console.error('[StompClientWrapper] 刷新好友列表失败:', error);
+                });
+                
+            // 刷新好友请求列表
+            this.refreshFriendRequests()
+                .then((updatedRequests) => {
+                    console.log('[StompClientWrapper] 好友请求列表已刷新，新列表:', updatedRequests);
+                })
+                .catch(error => {
+                    console.error('[StompClientWrapper] 刷新好友请求列表失败:', error);
+                });
+                
+        } catch (e) {
+            console.error('[StompClientWrapper] 处理好友接受消息出错:', e);
+        }
+    }
+    
+    // 新增：处理好友请求被拒绝的消息
+    _handleFriendRequestRejected(message) {
+        try {
+            console.log('[StompClientWrapper] 收到好友请求被拒绝的通知:', message);
+            const { senderId, receiverId } = message; // senderId 是被拒绝的人，receiverId 是拒绝的人
+
+            if (!senderId || !receiverId) {
+                console.error('[StompClientWrapper] friendRequestRejected 消息缺少 senderId 或 receiverId:', message);
+                return;
+            }
+
+            // 更新本地好友请求列表
+            // 找到自己发送的、且被对方拒绝的请求
+            const requestIndex = this.friendRequests.value.findIndex(req =>
+                req.firstUserId === senderId.toString() && // 自己是发送者
+                req.secondUserId === receiverId.toString() && // 对方是接收者
+                req.status === 'requested' // 或者 'sent' (根据displayStatus的逻辑)
+            );
+
+            if (requestIndex !== -1) {
+                this.friendRequests.value[requestIndex].status = 'deleted'; // 与后端Friends.Status一致
+                this.friendRequests.value[requestIndex].displayStatus = 'rejected';
+                console.log('[StompClientWrapper] 更新本地好友请求状态为已拒绝:', this.friendRequests.value[requestIndex]);
+                // 可以选择性地从列表中移除，或者保留但标记为已拒绝
+                // this.friendRequests.value.splice(requestIndex, 1);
+            } else {
+                console.warn('[StompClientWrapper] 未能在本地找到对应的已发送好友请求来更新为已拒绝状态。');
+            }
+
+            // 调用API刷新好友列表和好友请求列表，以确保数据完全同步
+            // 尽管本地更新了，但刷新可以获取最新的全面数据，并触发Vue的响应式更新
+            this.refreshFriendRequests()
+                .then(requests => {
+                     console.log('[StompClientWrapper] 好友请求列表已因拒绝事件刷新，新列表:', requests);
+                     // 可以在这里触发一个自定义事件，通知其他组件（如ContactsView）更新其视图
+                     this._trigger('friendRequestsUpdated', this.friendRequests.value);
+                })
+                .catch(error => {
+                    console.error('[StompClientWrapper] 因拒绝事件刷新好友请求列表失败:', error);
+                });
+
+            // 通知用户
+            const notificationMessage = message.message || `您发送给 ${message.rejectedByUsername || ('用户 ' + receiverId)} 的好友请求已被拒绝。`;
+            this._trigger('showSystemNotification', { 
+                title: '好友请求被拒',
+                message: notificationMessage, 
+                type: 'warning' 
+            });
+
+        } catch (e) {
+            console.error('[StompClientWrapper] 处理好友请求被拒绝消息出错:', e);
+        }
+    }
+    
+    // 新增：处理好友请求被发送者取消的消息 (接收者视角)
+    _handleFriendRequestCancelledBySender(message) {
+        try {
+            console.log('[StompClientWrapper] 收到好友请求被发送者取消的通知:', message);
+            const { cancellerId, originalReceiverId, cancellerUsername } = message;
+
+            // 确保当前用户是这个已取消请求的原接收者
+            if (originalReceiverId != this.currentUserId.value) {
+                console.warn('[StompClientWrapper] 收到的取消通知与当前用户不匹配:', message, '当前用户ID:', this.currentUserId.value);
+                return;
+            }
+
+            // 在本地好友请求列表中找到这条请求并更新或移除
+            // 这条请求的 firstUserId 是 cancellerId，secondUserId 是 originalReceiverId (即当前用户)
+            const requestIndex = this.friendRequests.value.findIndex(req =>
+                req.firstUserId === cancellerId.toString() &&
+                req.secondUserId === originalReceiverId.toString() && // 当前用户是接收者
+                req.status === 'requested' // 应该是处于请求状态的
+            );
+
+            if (requestIndex !== -1) {
+                // 直接修改本地缓存的请求对象状态，以便UI立即响应
+                const requestToUpdate = this.friendRequests.value[requestIndex];
+                requestToUpdate.status = 'deleted'; // 与后端将设置的状态一致
+                requestToUpdate.displayStatus = 'rejected'; // _processFriendRequests 会将 'deleted' 映射为 'rejected'
+                console.log('[StompClientWrapper] 本地更新了被发送者取消的好友请求状态:', requestToUpdate);
+
+                // 可选: 如果Vue在某些情况下没有检测到对象内部属性的更改，可以强制替换数组中的对象
+                // this.friendRequests.value.splice(requestIndex, 1, {...requestToUpdate});
+                // 或者更简单地，如果 friendRequests.value 本身是 reactive 的，上述直接修改属性通常足够
+
+                // 如果之前的 splice 行为是期望的（即从列表中移除），则可以保留 splice：
+                // const cancelledRequest = this.friendRequests.value.splice(requestIndex, 1)[0];
+                // console.log('[StompClientWrapper] 从本地移除了被发送者取消的好友请求:', cancelledRequest);
+                // 但根据您的问题，似乎是状态未更新，而不是未移除。所以我们优先更新状态。
+
+            } else {
+                console.warn('[StompClientWrapper] 未能在本地找到对应的待处理好友请求以标记为已取消。可能已被处理或不存在。');
+            }
+
+            // 刷新好友请求列表以确保与后端完全同步，这会获取最新数据并重新处理
+            this.refreshFriendRequests()
+                .then(requests => {
+                     console.log('[StompClientWrapper] 好友请求列表已因取消事件刷新，新列表:', requests);
+                     this._trigger('friendRequestsUpdated', this.friendRequests.value);
+                })
+                .catch(error => {
+                    console.error('[StompClientWrapper] 因取消事件刷新好友请求列表失败:', error);
+                });
+
+            // 通知用户
+            const notificationMessage = message.message || `${cancellerUsername || ('用户 ' + cancellerId)} 取消了发给您的好友请求。`;
+            this._trigger('showSystemNotification', { 
+                title: '好友请求已取消', 
+                message: notificationMessage, 
+                type: 'info' 
+            });
+
+        } catch (e) {
+            console.error('[StompClientWrapper] 处理好友请求被发送者取消消息出错:', e);
+        }
+    }
+    
+    // 刷新好友列表
+    refreshFriends() {
+        if (!this.isConnected.value || !this.stompClient.value?.connected) {
+            console.warn('[StompClientWrapper] 未连接到WebSocket服务器，无法刷新好友列表');
+            return Promise.reject(new Error('未连接到服务器'));
+        }
+
+        console.log('[StompClientWrapper] 开始刷新好友列表，当前用户ID:', this.currentUserId.value);
+        return new Promise((resolve, reject) => {
+            try {
+                // 获取JWT令牌
+                const authData = localStorage.getItem('authorize');
+                if (!authData) {
+                    return reject(new Error('用户未登录'));
+                }
+                
+                const parsedAuth = JSON.parse(authData);
+                const jwt = parsedAuth?.token;
+                
+                if (!jwt) {
+                    return reject(new Error('无效的认证信息'));
+                }
+                
+                // 调用后端API获取最新的好友列表
+                internalPost('/api/friends/getFriends',
+                    { userId: this.currentUserId.value.toString() },
+                    {
+                        'Authorization': 'Bearer ' + jwt
+                    },
+                    (data) => {
+                        if (!data) {
+                            console.error('[StompClientWrapper] 从服务器收到空数据');
+                            return reject(new Error('从服务器收到空数据'));
+                        }
+                        
+                        console.log('[StompClientWrapper] 刷新好友列表成功:', data);
+                        
+                        try {
+                            // 更新好友列表
+                            this.friends.value = data || [];
+                            resolve(this.friends.value);
+                        } catch (e) {
+                            console.error('[StompClientWrapper] 处理好友数据出错:', e);
+                            reject(e);
+                        }
+                    },
+                    (errorMsg) => {
+                        console.error('[StompClientWrapper] 刷新好友列表失败:', errorMsg);
+                        reject(new Error(errorMsg));
+                    }
+                );
+            } catch (e) {
+                console.error('[StompClientWrapper] refreshFriends方法异常:', e);
+                reject(e);
+            }
+        });
+    }
+    
+    // 刷新好友请求列表
+    refreshFriendRequests() {
+        if (!this.isConnected.value || !this.stompClient.value?.connected) {
+            console.warn('[StompClientWrapper] 未连接到WebSocket服务器，无法刷新好友请求列表');
+            return Promise.reject(new Error('未连接到服务器'));
+        }
+
+        return new Promise((resolve, reject) => {
+            try {
+                // 获取JWT令牌
+                const authData = localStorage.getItem('authorize');
+                if (!authData) {
+                    return reject(new Error('用户未登录'));
+                }
+                
+                const parsedAuth = JSON.parse(authData);
+                const jwt = parsedAuth?.token;
+                
+                if (!jwt) {
+                    return reject(new Error('无效的认证信息'));
+                }
+                
+                // 调用后端API获取最新的好友请求列表
+                internalPost('/api/friends/getFriendRequests',
+                    { userId: this.currentUserId.value.toString() },
+                    {
+                        'Authorization': 'Bearer ' + jwt
+                    },
+                    (data) => {
+                        if (!data) {
+                            console.error('[StompClientWrapper] 从服务器收到空数据');
+                            return reject(new Error('从服务器收到空数据'));
+                        }
+                        
+                        console.log('[StompClientWrapper] 刷新好友请求列表成功，原始数据:', data);
+                        
+                        try {
+                            // 处理请求数据，区分收到的和发送的
+                            const processedRequests = this._processFriendRequests(data);
+                            
+                            // 更新好友请求列表
+                            this.friendRequests.value = processedRequests || [];
+                            
+                            console.log('[StompClientWrapper] 处理后的好友请求列表:', this.friendRequests.value);
+                            
+                            resolve(this.friendRequests.value);
+                        } catch (e) {
+                            console.error('[StompClientWrapper] 处理好友请求数据出错:', e);
+                            reject(e);
+                        }
+                    },
+                    (errorMsg) => {
+                        console.error('[StompClientWrapper] 刷新好友请求列表失败:', errorMsg);
+                        reject(new Error(errorMsg));
+                    }
+                );
+            } catch (e) {
+                console.error('[StompClientWrapper] refreshFriendRequests方法异常:', e);
+                reject(e);
+            }
+        });
+    }
+
+    // 处理自己发送的好友请求
+    _handleFriendRequestSent(message) {
+        // 确保friendRequests已初始化
+        if (!this.friendRequests.value) {
+            this.friendRequests.value = [];
+        }
+        
+        // 检查是否包含完整的FriendsResponse对象
+        if (message.friendsResponse) {
+            // 使用后端提供的FriendsResponse对象
+            const friendRequest = message.friendsResponse;
+            
+            // 检查是否已存在相同的请求
+            const exists = this.friendRequests.value.some(req => 
+                req.firstUserId === friendRequest.firstUserId && 
+                req.secondUserId === friendRequest.secondUserId
+            );
+            
+            // 如果不存在，添加到列表
+            if (!exists) {
+                // 添加状态为"sent"，表示是自己发送的
+                friendRequest.status = 'sent';
+                this.friendRequests.value.push(friendRequest);
+                console.log('[StompClientWrapper] 添加自己发送的好友请求:', friendRequest);
+            }
+        }
+    }
+
+    // 处理群组邀请
+    _handleGroupInvite(message) {
+        console.log('[StompClientWrapper] 收到群组邀请消息:', message);
+        
+        try {
+            // 确保有群组邀请数据
+            if (!message.id && !message.groupId) {
+                console.warn('[StompClientWrapper] 群组邀请消息格式不正确，尝试其他字段:', message);
+                // 尝试从其他字段获取信息
+                if (!message.invitation && !message.invitationId) {
+                    console.error('[StompClientWrapper] 群组邀请消息不包含必要信息，无法处理:', message);
+                    return;
+                }
+            }
+            
+            // 标准化状态值处理逻辑
+            let status = (message.status?.toLowerCase?.() || '').trim();
+            
+            // 标准化为前端期望的三种状态
+            if (status === '' || status === 'pending' || status === 'requested') {
+                status = 'pending';
+            } else if (status === 'accepted' || status === 'joined') {
+                status = 'accepted';
+            } else if (status === 'rejected' || status === 'declined' || status === 'refused' || status === 'denied') {
+                status = 'rejected';
+            } else {
+                // 默认为待处理状态
+                status = 'pending';
+            }
+            
+            // 直接将消息添加到临时群组邀请列表中
+            // 这样UI可以立即显示，不需要等待API刷新
+            const tempInvitation = {
+                id: message.id || message.invitationId || Date.now(),
+                groupId: message.groupId,
+                groupName: message.groupName || '未知群组',
+                inviterId: message.inviterId,
+                inviterName: message.inviterName || '未知用户',
+                inviteeId: this.currentUserId.value,
+                status: status, // 使用标准化后的状态
+                createdAt: message.createdAt || new Date().toISOString()
+            };
+            
+            // 检查是否已存在相同邀请
+            const exists = this.groupInvitations.value.some(inv => 
+                inv.id === tempInvitation.id ||
+                (inv.groupId === tempInvitation.groupId && inv.inviterId === tempInvitation.inviterId)
+            );
+            
+            if (!exists) {
+                // 添加到列表
+                this.groupInvitations.value.push(tempInvitation);
+                console.log('[StompClientWrapper] 临时添加群组邀请到列表:', tempInvitation);
+            }
+            
+            // 刷新群组邀请列表
+            this.refreshGroupInvitations()
+                .then(invitations => {
+                    console.log('[StompClientWrapper] 群组邀请列表已刷新:', invitations);
+                    // 触发事件通知UI更新
+                    this._trigger('onGroupInvitationsUpdated', invitations);
+                })
+                .catch(error => {
+                    console.error('[StompClientWrapper] 刷新群组邀请列表失败:', error);
+                    // 即使刷新失败，也触发事件，以便UI能显示临时添加的邀请
+                    this._trigger('onGroupInvitationsUpdated', this.groupInvitations.value);
+                });
+            
+            // 通知用户
+            const inviterName = message.inviterName || ('用户' + message.inviterId);
+            const groupName = message.groupName || ('群组' + message.groupId);
+            const notificationMessage = `${inviterName} 邀请您加入群聊 ${groupName}`;
+            
+            this._trigger('showSystemNotification', { 
+                title: '新群聊邀请', 
+                message: notificationMessage, 
+                type: 'info' 
+            });
+        } catch (e) {
+            console.error('[StompClientWrapper] 处理群组邀请消息出错:', e);
+        }
+    }
+    
+    // 刷新群组邀请列表
+    refreshGroupInvitations() {
+        if (!this.isConnected.value || !this.stompClient.value?.connected) {
+            console.warn('[StompClientWrapper] 未连接到WebSocket服务器，无法刷新群组邀请列表');
+            return Promise.reject(new Error('未连接到服务器'));
+        }
+
+        console.log('[StompClientWrapper] 开始刷新群组邀请列表');
+        return new Promise((resolve, reject) => {
+            try {
+                // 使用groupApi中的方法获取群组邀请
+                getReceivedGroupInvitations()
+                    .then(invitations => {
+                        console.log('[StompClientWrapper] 刷新群组邀请列表成功:', invitations);
+                        // 更新群组邀请列表
+                        this.groupInvitations.value = invitations || [];
+                        resolve(this.groupInvitations.value);
+                    })
+                    .catch(error => {
+                        console.error('[StompClientWrapper] 刷新群组邀请列表失败:', error);
+                        reject(error);
+                    });
+            } catch (e) {
+                console.error('[StompClientWrapper] refreshGroupInvitations方法异常:', e);
+                reject(e);
+            }
+        });
+    }
+
     // --- 发送消息 ---
-    sendPublicMessage(content, groupId) {
+    sendPublicMessage(content, groupId, fileData = null) {
         // 增强连接状态检查
         if (!this.isConnected.value || !this.stompClient.value || !this.stompClient.value.connected) {
             const errorMsg = '未连接到WebSocket服务器，无法发送消息';
@@ -672,15 +1273,33 @@ class StompClientWrapper {
         
         const destination = '/app/chat/channel'; // 发送到后端的 @MessageMapping
         try {
+            // 构建消息载荷，支持文件消息
+            const messagePayload = { 
+                content: content, 
+                groupId: groupId 
+            };
+            
+            // 如果有文件数据，添加到消息中
+            if (fileData) {
+                Object.assign(messagePayload, {
+                    fileUrl: fileData.fileUrl,
+                    fileName: fileData.fileName,
+                    fileType: fileData.fileType,
+                    fileSize: fileData.fileSize,
+                    messageType: fileData.messageType || 'FILE'
+                });
+            }
+            
             this.stompClient.value.publish({ 
                 destination: destination, // 发送消息的目的地
-                body: JSON.stringify({ content: content, groupId: groupId }), // 发送内容和群组id
+                body: JSON.stringify(messagePayload), // 发送内容和群组id
                 headers: {
                     'user-id': this.currentUserId.value,
                     'group-id': groupId
                 }
             });
-            console.log(`[StompClientWrapper] Sent public message to ${destination}:`, { content, groupId });
+            console.log(`[StompClientWrapper] Sent public message to ${destination}:`, messagePayload);
+            
             return true;
         } catch (e) {
             console.error(`[StompClientWrapper] Failed to send public message to ${destination}:`, e);
@@ -689,7 +1308,7 @@ class StompClientWrapper {
         }
     }
 
-    sendPrivateMessage(toUserId, content, toUserName) {
+    sendPrivateMessage(toUserId, content, toUserName, fileData = null) {
         // 增强连接状态检查
         if (!this.isConnected.value || !this.stompClient.value || !this.stompClient.value.connected) {
             const errorMsg = '未连接到WebSocket服务器，无法发送消息';
@@ -707,12 +1326,22 @@ class StompClientWrapper {
         
         const destination = '/app/chat/private'; 
         try {
-            // Corrected payload to match backend expectation (receiverId and content)
+            // 构建消息载荷，支持文件消息
             const messagePayload = {
                 receiverId: toUserId,   // Use receiverId to match backend getter
-                content: content           // Content is essential
-                // fromUserId, fromUser, toUser are likely set by backend or irrelevant in payload
+                content: content        // Content is essential
             };
+            
+            // 如果有文件数据，添加到消息中
+            if (fileData) {
+                Object.assign(messagePayload, {
+                    fileUrl: fileData.fileUrl,
+                    fileName: fileData.fileName,
+                    fileType: fileData.fileType,
+                    fileSize: fileData.fileSize,
+                    messageType: fileData.messageType || 'FILE'
+                });
+            }
             
             console.log('[StompClientWrapper] 准备发送私人消息 payload:', messagePayload);
             
@@ -727,6 +1356,7 @@ class StompClientWrapper {
                 }
             });
             console.log(`[StompClientWrapper] 已发送私人消息到 ${destination}，接收者ID: ${toUserId}`);
+            
             return true;
         } catch (e) {
             console.error(`[StompClientWrapper] 发送私人消息失败:`, e);
@@ -738,5 +1368,11 @@ class StompClientWrapper {
 
 // 单例模式导出，或者根据需要导出类本身
 const stompClientInstance = new StompClientWrapper();
+
+// 添加全局引用以便在API函数中使用
+if (typeof window !== 'undefined') {
+    window.stompClientInstance = stompClientInstance;
+}
+
 export default stompClientInstance; // 导出单例
 // export { StompClientWrapper }; // 或者导出类

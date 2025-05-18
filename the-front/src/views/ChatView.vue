@@ -3,11 +3,14 @@
     <!-- Sidebar -->
     <Sidebar
       :current-user="currentUser"
-      :current-user-avatar="currentUserAvatar" 
+      :current-user-avatar="currentUserAvatar"
+      :user-id="currentUserId" 
       :friends="friends"
       :groups="groups"
       :selected-contact="selectedContact"
       :chat-type="chatType"
+      :unread-messages="unreadMessages"
+      :latest-messages="latestMessages"
       @select-contact="handleSelectContact"
     />
 
@@ -24,9 +27,82 @@
           :no-more-history="noMoreHistory"
           @send-message="handleSendMessage"
           @load-more-history="loadMoreHistory"
-        />
+        >
+          <!-- 添加群组详情按钮 -->
+          <template #header-actions v-if="chatType === 'group'">
+            <el-button 
+              type="primary" 
+              @click="showGroupDetail = !showGroupDetail" 
+              class="group-info-btn"
+              :icon="showGroupDetail ? ArrowRight : InfoFilled"
+              text
+            >
+              {{ showGroupDetail ? '收起' : '群聊详情' }}
+            </el-button>
+          </template>
+        </ChatArea>
         <WelcomeScreen v-else />
     </div>
+
+    <!-- 群组邀请对话框 -->
+    <el-dialog
+      v-model="groupInvitationsVisible"
+      title="群组邀请"
+      width="500px"
+    >
+      <GroupInvitations />
+    </el-dialog>
+
+    <!-- 右侧群聊详情面板（滑动效果） -->
+    <div 
+      class="group-detail-sidebar" 
+      :class="{ 'sidebar-open': showGroupDetail }"
+      v-if="selectedContact && chatType === 'group'"
+    >
+      <div class="sidebar-header">
+        <h3>群聊详情</h3>
+        <el-button 
+          type="text" 
+          @click="showGroupDetail = false"
+          :icon="Close"
+          circle
+        ></el-button>
+      </div>
+      <GroupDetailPanel 
+        :group-id="selectedContact.groupId" 
+        @invite-friend="showInviteDialog"
+      />
+    </div>
+
+    <!-- 邀请好友加入群组对话框 -->
+    <el-dialog
+      v-model="inviteDialogVisible"
+      title="邀请好友加入群组"
+      width="500px"
+    >
+      <el-form :model="inviteForm" @submit.prevent="handleInvite">
+        <el-alert
+          title="注意: 只能邀请已是你好友的用户"
+          type="warning"
+          :closable="false"
+          style="margin-bottom: 15px"
+        />
+        <el-form-item label="选择好友" prop="friendId">
+          <el-select v-model="inviteForm.friendId" placeholder="选择好友" style="width: 100%">
+            <el-option 
+              v-for="friend in availableFriends" 
+              :key="friend.friendId" 
+              :label="friend.friendName" 
+              :value="friend.friendId"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item>
+          <el-button type="primary" native-type="submit" :loading="inviteLoading">发送邀请</el-button>
+          <el-button @click="inviteDialogVisible = false">取消</el-button>
+        </el-form-item>
+      </el-form>
+    </el-dialog>
   </div>
 </template>
 
@@ -34,12 +110,103 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
 import stompClientInstance from '@/net/websocket';
 import { getPrivateChatHistory, getGroupChatHistory } from '@/api/chatApi';
+import { inviteUserToGroup, getGroupDetail } from '@/api/groupApi';
 import { ElMessage } from 'element-plus';
+import { InfoFilled, ArrowRight, Close } from '@element-plus/icons-vue';
 
 // Import child components
-import Sidebar from './components/chat/Sidebar.vue'; // Adjusted path
-import ChatArea from './components/chat/ChatArea.vue'; // Adjusted path
-import WelcomeScreen from './components/chat/WelcomeScreen.vue'; // Adjusted path
+import Sidebar from './components/chat/Sidebar.vue'; 
+import ChatArea from './components/chat/ChatArea.vue';
+import WelcomeScreen from './components/chat/WelcomeScreen.vue';
+import GroupInvitations from './components/notifications/GroupInvitations.vue';
+import GroupDetailPanel from './components/group/GroupDetailPanel.vue';
+
+// 消息提示音
+const notificationSound = new Audio('/assets/notification.mp3');
+
+// 播放提示音
+const playNotificationSound = () => {
+  try {
+    // 检查音频文件是否加载成功
+    if (notificationSound.readyState >= 2) {
+      notificationSound.currentTime = 0; // 重置播放位置
+      notificationSound.play()
+        .catch(error => console.error('[ChatView] 播放提示音失败:', error));
+    } else {
+      console.warn('[ChatView] 提示音尚未加载完成');
+    }
+  } catch (error) {
+    console.error('[ChatView] 播放提示音出错:', error);
+  }
+};
+
+// 请求桌面通知权限
+const requestNotificationPermission = async () => {
+  try {
+    if (Notification && Notification.permission !== 'granted') {
+      const permission = await Notification.requestPermission();
+      console.log('[ChatView] 通知权限状态:', permission);
+    }
+  } catch (error) {
+    console.error('[ChatView] 请求通知权限失败:', error);
+  }
+};
+
+// 发送桌面通知
+const sendNotification = (title, body) => {
+  try {
+    if (Notification && Notification.permission === 'granted' && document.visibilityState !== 'visible') {
+      const notification = new Notification(title, {
+        body: body,
+        icon: '/favicon.ico', // 可以替换为您自己的图标
+      });
+      
+      // 点击通知时聚焦窗口
+      notification.onclick = function() {
+        window.focus();
+        this.close();
+      };
+      
+      // 5秒后自动关闭通知
+      setTimeout(() => notification.close(), 5000);
+    }
+  } catch (error) {
+    console.error('[ChatView] 发送通知失败:', error);
+  }
+};
+
+// 页面标题闪烁提示
+const originalTitle = document.title;
+let titleInterval = null;
+
+// 开始标题闪烁
+const startTitleFlashing = (message) => {
+  // 如果已经有一个闪烁间隔，则不需要再次启动
+  if (titleInterval) return;
+  
+  const newTitle = message || '新消息';
+  let isOriginal = false;
+  
+  titleInterval = setInterval(() => {
+    document.title = isOriginal ? originalTitle : `(${newTitle}) ${originalTitle}`;
+    isOriginal = !isOriginal;
+  }, 1000);
+  
+  // 用户切换回页面时停止闪烁
+  window.addEventListener('focus', stopTitleFlashing);
+};
+
+// 停止标题闪烁
+const stopTitleFlashing = () => {
+  if (titleInterval) {
+    clearInterval(titleInterval);
+    titleInterval = null;
+    document.title = originalTitle;
+  }
+  
+  // 移除事件监听器以避免重复添加
+  window.removeEventListener('focus', stopTitleFlashing);
+};
 
 // --- Core State ---
 const currentUser = ref('');
@@ -53,6 +220,17 @@ const chatHistories = ref(new Map());
 const isLoadingHistory = ref(false);
 const noMoreHistory = ref(false);
 
+// 添加未读消息管理
+const unreadMessages = ref(new Map()); // 存储每个联系人/群组的未读消息数量
+const latestMessages = ref(new Map()); // 存储每个联系人/群组的最新消息内容
+
+// 对话框状态
+const groupInvitationsVisible = ref(false);
+const showGroupDetail = ref(false);
+const inviteDialogVisible = ref(false);
+const inviteForm = ref({ friendId: null });
+const inviteLoading = ref(false);
+
 // 计算当前聊天消息
 const currentChatMessages = computed(() => {
   if (!selectedContact.value) {
@@ -61,6 +239,39 @@ const currentChatMessages = computed(() => {
   const key = chatType.value === 'private' ? selectedContact.value.userId : selectedContact.value.groupId;
   const msgs = chatHistories.value.get(key) || [];
   return [...msgs].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+});
+
+// 可邀请好友列表（已过滤掉当前群组成员）
+const availableFriends = computed(() => {
+  const allFriends = stompClientInstance.friends.value || [];
+  
+  // 如果选中的是群组，过滤掉已经在群组中的好友
+  if (selectedContact.value && chatType.value === 'group') {
+    // 这里应该通过API获取当前群组成员ID列表
+    // 临时使用空数组
+    const groupMembers = []; 
+    
+    return allFriends.filter(friend => {
+      // 获取好友ID
+      const friendId = friend.firstUserId === currentUserId.value ? friend.secondUserId : friend.firstUserId;
+      // 排除已在群组中的好友
+      return !groupMembers.includes(friendId);
+    }).map(friend => {
+      const isFirst = friend.firstUserId === currentUserId.value;
+      return {
+        friendId: isFirst ? friend.secondUserId : friend.firstUserId,
+        friendName: isFirst ? friend.secondUsername : friend.firstUsername
+      };
+    });
+  }
+  
+  return allFriends.map(friend => {
+    const isFirst = friend.firstUserId === currentUserId.value;
+    return {
+      friendId: isFirst ? friend.secondUserId : friend.firstUserId,
+      friendName: isFirst ? friend.secondUsername : friend.firstUsername
+    };
+  });
 });
 
 // --- 获取JWT令牌 ---
@@ -93,6 +304,17 @@ const syncDataFromWebSocket = () => {
   // 每次同步时初始化本地历史（从全局缓存读取）
   initializeChatHistories();
 };
+
+// 添加对好友列表和群组列表变化的监听
+watch(() => stompClientInstance.friends.value, (newFriends) => {
+  console.log('[ChatView] 检测到好友列表变化');
+  friends.value = newFriends;
+}, { deep: true });
+
+watch(() => stompClientInstance.groups.value, (newGroups) => {
+  console.log('[ChatView] 检测到群组列表变化');
+  groups.value = newGroups;
+}, { deep: true });
 
 // 初始化本地chatHistories Map
 const initializeChatHistories = () => {
@@ -152,6 +374,9 @@ onMounted(async () => {
     return;
   }
 
+  // 请求通知权限
+  await requestNotificationPermission();
+
   if (!stompClientInstance.isConnected.value) {
       console.log('[ChatView] WebSocket未连接，尝试连接...');
       try {
@@ -207,6 +432,7 @@ onUnmounted(() => {
     stompClientInstance.off('onPublicMessage', handlePublicMessage);
     // stompClientInstance.off('onConnected', handleConnected);
     stompClientInstance.off('onError', handleError);
+    stopTitleFlashing();
 });
 
 // --- WebSocket事件处理程序 ---
@@ -222,9 +448,10 @@ const handlePrivateMessage = (message) => {
   
   const msg = normalizeMessage(message, 'private');
   
-  if (Number(msg.senderId) === Number(currentUserId.value)) {
-    return;
-  }
+  // 不再过滤掉自己发送的消息，让发送者也能看到自己发的消息
+  // if (Number(msg.senderId) === Number(currentUserId.value)) {
+  //   return;
+  // }
   
   // 防止重复消息
   const cid = msg.senderId === Number(currentUserId.value) ? msg.receiverId : msg.senderId;
@@ -241,6 +468,35 @@ const handlePrivateMessage = (message) => {
   }
   chatHistories.value.get(idKey).push(msg);
   chatHistories.value = new Map(chatHistories.value);
+  
+  // 更新最新消息内容
+  if (msg.fileUrl) {
+    // 如果是文件消息，显示更友好的内容
+    const fileType = msg.messageType || '文件';
+    latestMessages.value.set(idKey, `[${fileType}] ${msg.fileName || '文件'}`);
+  } else {
+    latestMessages.value.set(idKey, msg.content);
+  }
+  
+  // 如果不是当前选中的联系人，增加未读消息计数
+  if (!selectedContact.value || 
+      chatType.value !== 'private' || 
+      String(selectedContact.value.userId) !== idKey) {
+    const currentCount = unreadMessages.value.get(idKey) || 0;
+    unreadMessages.value.set(idKey, currentCount + 1);
+    
+    // 播放提示音
+    playNotificationSound();
+    
+    // 发送桌面通知
+    const senderName = msg.sender || '好友';
+    sendNotification(`来自 ${senderName} 的新消息`, msg.content);
+    
+    // 如果窗口不是活动状态，启动标题闪烁
+    if (document.visibilityState !== 'visible') {
+      startTitleFlashing('新消息');
+    }
+  }
 };
 
 const handlePublicMessage = (message) => {
@@ -248,9 +504,10 @@ const handlePublicMessage = (message) => {
   
   const msg = normalizeMessage(message, 'group');
   
-  if (Number(msg.senderId) === Number(currentUserId.value)) {
-    return;
-  }
+  // 不再过滤掉自己发送的消息，让发送者也能看到自己发的消息
+  // if (Number(msg.senderId) === Number(currentUserId.value)) {
+  //   return;
+  // }
   
   const idKey = String(msg.groupId);
   const existing = chatHistories.value.get(idKey) || [];
@@ -266,6 +523,36 @@ const handlePublicMessage = (message) => {
   }
   chatHistories.value.get(idKey).push(msg);
   chatHistories.value = new Map(chatHistories.value);
+  
+  // 更新最新消息内容
+  if (msg.fileUrl) {
+    // 如果是文件消息，显示更友好的内容
+    const fileType = msg.messageType || '文件';
+    latestMessages.value.set(idKey, `${msg.sender || '有人'}: [${fileType}] ${msg.fileName || '文件'}`);
+  } else {
+    latestMessages.value.set(idKey, `${msg.sender || '有人'}: ${msg.content}`);
+  }
+  
+  // 如果不是当前选中的群组，增加未读消息计数
+  if (!selectedContact.value || 
+      chatType.value !== 'group' || 
+      String(selectedContact.value.groupId) !== idKey) {
+    const currentCount = unreadMessages.value.get(idKey) || 0;
+    unreadMessages.value.set(idKey, currentCount + 1);
+    
+    // 播放提示音
+    playNotificationSound();
+    
+    // 发送桌面通知
+    const groupName = findGroupName(idKey) || '群聊';
+    const senderName = msg.sender || '有人';
+    sendNotification(`${groupName} 的新消息`, `${senderName}: ${msg.content}`);
+    
+    // 如果窗口不是活动状态，启动标题闪烁
+    if (document.visibilityState !== 'visible') {
+      startTitleFlashing('新消息');
+    }
+  }
 };
 
 const handleError = (error) => {
@@ -274,7 +561,7 @@ const handleError = (error) => {
 };
 
 // --- Event Handlers from Child Components ---
-const handleSelectContact = (contact, type) => {
+const handleSelectContact = async (contact, type) => {
   console.log('[ChatView] handleSelectContact被调用:', type, contact);
   if (!contact) {
     console.error('[ChatView] 选中的联系人无效');
@@ -285,6 +572,44 @@ const handleSelectContact = (contact, type) => {
   // 重置历史加载状态
   isLoadingHistory.value = false;
   noMoreHistory.value = false;
+  
+  // 如果是群组类型，先获取群组详情
+  if (type === 'group') {
+    try {
+      // 获取群组详情，包括成员数量
+      const groupDetail = await getGroupDetail(contact.groupId);
+      if (groupDetail) {
+        // 更新联系人对象，添加成员数量
+        contact.memberCount = groupDetail.members?.length || 0;
+      }
+    } catch (error) {
+      console.error('[ChatView] 获取群组详情失败:', error);
+      // 失败时不阻止继续，只是没有成员数量信息
+    }
+  } else if (type === 'private') {
+    // 如果是私聊类型，从friends列表中查找并设置online状态
+    try {
+      const friend = friends.value.find(f => {
+        // 需要进行字符串比较，因为ID可能是字符串也可能是数字
+        const friendId = f.firstUserId === currentUserId.value.toString() ? f.secondUserId : f.firstUserId;
+        return friendId === contact.userId.toString();
+      });
+      
+      if (friend) {
+        console.log('[ChatView] 找到好友，设置在线状态:', friend);
+        // 明确设置在线状态，确保不是undefined
+        contact.online = friend.online === true;
+      } else {
+        console.warn('[ChatView] 未找到对应好友，无法设置在线状态:', contact);
+        // 默认设置为离线
+        contact.online = false;
+      }
+    } catch (error) {
+      console.error('[ChatView] 设置好友在线状态时出错:', error);
+      contact.online = false;
+    }
+  }
+  
   // 设置当前选择
   selectedContact.value = contact;
   chatType.value = type;
@@ -297,56 +622,70 @@ const handleSelectContact = (contact, type) => {
   } else {
     console.log(`[ChatView] 显示现有的历史，${key}`);
   }
+  
+  // 添加: 选中联系人后，清除对应的未读消息计数
+  if (unreadMessages.value.has(key)) {
+    unreadMessages.value.delete(key);
+  }
+  
+  // 切换联系人时自动关闭群聊详情
+  showGroupDetail.value = false;
 };
 
-const handleSendMessage = (messageData) => {
-  if (!selectedContact.value) return;
-  const content = typeof messageData === 'string' ? messageData.trim() : messageData.content;
-  if (!content) return;
-  try {
-    if (chatType.value === 'private') {
-      const toId = selectedContact.value.userId;
-      stompClientInstance.sendPrivateMessage(toId, content, selectedContact.value.username);
-      // 添加本地私聊消息以供发送者渲染
-      const localMsg = {
-        id: Date.now(),
-        content,
-        timestamp: new Date().toISOString(),
-        senderId: Number(currentUserId.value),
-        sender: currentUser.value,
-        receiverId: toId,
-        groupId: null,
-        type: 'CHAT'
-      };
-      // 更新历史记录
-      const privKey = toId;
-      const privHist = chatHistories.value.get(privKey) || [];
-      privHist.push(localMsg);
-      chatHistories.value.set(privKey, privHist);
-      chatHistories.value = new Map(chatHistories.value);
-    } else if (chatType.value === 'group') {
-      const gid = selectedContact.value.groupId;
-      stompClientInstance.sendPublicMessage(content, gid);
-      // 添加本地群聊消息以供发送者渲染
-      const localGrpMsg = {
-        id: Date.now(),
-        content,
-        timestamp: new Date().toISOString(),
-        senderId: Number(currentUserId.value),
-        sender: currentUser.value,
-        receiverId: null,
-        groupId: gid,
-        type: 'CHAT'
-      };
-      const grpKey = gid;
-      const grpHist = chatHistories.value.get(grpKey) || [];
-      grpHist.push(localGrpMsg);
-      chatHistories.value.set(grpKey, grpHist);
-      chatHistories.value = new Map(chatHistories.value);
+const handleSendMessage = (message) => {
+  // 检查是否是文件消息 - 判断是否有fileUrl字段
+  const isFileMessage = message && message.fileUrl;
+  console.log(`[ChatView] 处理${isFileMessage ? '文件' : '文本'}消息发送:`, message);
+
+  // 处理群聊消息
+  if (chatType.value === 'group' && selectedContact.value) {
+    const groupId = selectedContact.value.groupId;
+    if (!groupId) {
+      ElMessage.error('未选择有效的群聊');
+      return;
     }
-  } catch (e) {
-    console.error('[ChatView] 发送消息失败:', e);
-    ElMessage.error(`发送消息失败: ${e.message || '请检查连接'}`);
+
+    // 构建基本消息对象
+    const content = isFileMessage ? message.content : (typeof message === 'string' ? message.trim() : message.content);
+    
+    if (isFileMessage) {
+      // 如果是文件消息，使用扩展的文件数据参数
+      stompClientInstance.sendPublicMessage(content, groupId, message);
+      
+      // 不在这里存储消息，因为后端的WebSocket应该会将消息广播给所有人，包括发送者
+    } else {
+      // 普通文本消息
+      stompClientInstance.sendPublicMessage(content, groupId);
+
+      // 不需要再手动添加本地消息，等待WebSocket返回
+    }
+  }
+  // 处理私聊消息
+  else if (chatType.value === 'private' && selectedContact.value) {
+    const receiverId = selectedContact.value.userId;
+    const receiverName = selectedContact.value.username;
+    
+    if (!receiverId) {
+      ElMessage.error('未选择有效的私聊对象');
+      return;
+    }
+
+    // 构建基本消息对象
+    const content = isFileMessage ? message.content : (typeof message === 'string' ? message.trim() : message.content);
+    
+    if (isFileMessage) {
+      // 如果是文件消息，使用扩展的文件数据参数
+      stompClientInstance.sendPrivateMessage(receiverId, content, receiverName, message);
+      
+      // 不在这里存储消息，因为后端的WebSocket应该会将消息发给发送者自己
+    } else {
+      // 普通文本消息
+      stompClientInstance.sendPrivateMessage(receiverId, content, receiverName);
+      
+      // 不需要再手动添加本地消息，等待WebSocket返回
+    }
+  } else {
+    ElMessage.warning('请先选择聊天对象');
   }
 };
 
@@ -361,55 +700,62 @@ const loadMoreHistory = async () => {
     const type = chatType.value;
     const key = type === 'private' ? contact.userId : contact.groupId;
     const currentHistory = chatHistories.value.get(key) || [];
-    // 确定用于获取更早消息的锚点（例如，最旧消息的ID或时间戳）
-    // **API限制**: 当前API调用不支持在特定点之前获取消息。
-    // 我们假设API可能会返回更早的消息，但需要验证/API更改。
     const oldestMessageId = currentHistory.length > 0 ? currentHistory[0].id : null; 
     console.log(`[ChatView] 尝试加载更早的历史, 在消息ID: ${oldestMessageId}之前`);
 
-    isLoadingHistory.value = true;
+    isLoadingHistory.value = true;  
     try {
         let olderHistory = [];
-        // **Placeholder**: Adjust API call when parameters for fetching older messages are available
-        const fetchLimit = 50; // 或另一个合适的限制
+        const fetchLimit = 50;
+        
         if (type === 'private') {
-           //这里应该传入两个user的id
-            olderHistory = await getPrivateChatHistory(currentUserId.value, contact.userId, fetchLimit);
+            olderHistory = await getPrivateChatHistory(
+                currentUserId.value,
+                contact.userId, 
+                fetchLimit,
+                oldestMessageId
+            );
         } else if (type === 'group') {
-            // 假设API调用需要调整，例如getGroupChatHistory(contact.groupId, fetchLimit, oldestMessageId)
-            olderHistory = await getGroupChatHistory(contact.groupId, fetchLimit);
+            olderHistory = await getGroupChatHistory(contact.groupId, fetchLimit, oldestMessageId);
+        }
+
+        // 检查结果是否是数组
+        if (!Array.isArray(olderHistory)) {
+            console.log('[ChatView] 返回的历史记录不是数组');
+            olderHistory = [];
         }
 
         console.log(`[ChatView] 获取更早的历史: ${key}:`, olderHistory.length);
 
-        if (olderHistory && olderHistory.length > 0) {
-            // 过滤掉任何已经存在的消息（如果API重叠发生，则很重要）
+        if (olderHistory.length > 0) {
+            // 过滤掉任何已经存在的消息
             const existingIds = new Set(currentHistory.map(m => m.id));
-            const newMessages = olderHistory.filter(m => !existingIds.has(m.id));
+            const newMessages = olderHistory.filter(m => m && m.id && !existingIds.has(m.id));
 
             if (newMessages.length > 0) {
                 const normalized = newMessages.map(raw => normalizeMessage(raw, chatType.value));
                 chatHistories.value.set(key, [...normalized, ...currentHistory]);
             } else {
                 console.log(`[ChatView] 没有找到新的更早的消息: ${key}.`);
-                // 如果API返回的消息我们已经有了，假设没有更多的历史
                 noMoreHistory.value = true;
+                ElMessage.info('没有更早的消息了');
             }
             
-            // 如果返回的消息数量小于限制，假设没有更多的历史
             if (olderHistory.length < fetchLimit) {
-                 console.log(`[ChatView] 获取的更早消息小于限制(${fetchLimit}), 假设没有更多的历史: ${key}.`);
-                 noMoreHistory.value = true;
+                console.log(`[ChatView] 获取的更早消息小于限制(${fetchLimit}), 没有更多历史了`);
+                noMoreHistory.value = true;
+                ElMessage.info('没有更早的消息了');
             }
-
         } else {
             console.log(`[ChatView] 没有返回更早的历史: ${key}.`);
-            noMoreHistory.value = true; // 标记没有更多的历史要加载
+            noMoreHistory.value = true;
+            ElMessage.info('没有更早的消息了');
         }
-
     } catch (error) {
         console.error('[ChatView] 通过API加载更早的聊天记录失败:', error);
-        ElMessage.error(`加载更早的聊天记录失败: ${error.message || '请稍后重试'}`);
+        ElMessage.error(`加载失败: ${error.message || '请稍后重试'}`);
+        // 即使失败也标记为没有更多历史，防止用户一直点击
+        noMoreHistory.value = true;
     } finally {
         isLoadingHistory.value = false;
     }
@@ -432,58 +778,112 @@ const normalizeMessage = (rawMsg, type) => {
     content: rawMsg.content,
     timestamp: rawMsg.timestamp || rawMsg.createdAt || rawMsg.createAt || rawMsg.CreateAt,
     senderId: Number(rawMsg.senderId || rawMsg.SenderId),
-    sender: '',
+    sender: '', // sender 初始化为空字符串
     roomId: null,
     groupId: type === 'group' ? rawMsg.groupId : null,
-    receiverId: type === 'private' ? Number(rawMsg.receiverId) : null
+    receiverId: type === 'private' ? Number(rawMsg.receiverId) : null,
+    // 直接从原始消息中获取senderName，如果存在的话
+    // 因为后端处理历史消息时会填充senderName
+    senderName: rawMsg.senderName || null,
+    // 保留文件相关字段
+    fileUrl: rawMsg.fileUrl || rawMsg.file_url || null,
+    fileName: rawMsg.fileName || null,
+    fileType: rawMsg.fileType || null,
+    fileSize: rawMsg.fileSize || null,
+    messageType: rawMsg.messageType || (rawMsg.fileUrl || rawMsg.file_url ? 'FILE' : null)
   };
   
   // 补齐 sender 用户名
   if (chatMsg.senderId === Number(currentUserId.value)) {
     chatMsg.sender = currentUser.value;
   } else {
-    // 私聊消息，查找好友名称
     if (type === 'private') {
-      // 查找新格式的好友
+      // 私聊逻辑：尝试从好友列表匹配接收者/发送者以获得正确的用户名
       const friend = friends.value.find(f => {
-        // 判断当前用户是firstUser还是secondUser
-        const isFirst = f.firstUserId === currentUserId.value.toString();
-        const friendId = isFirst ? f.secondUserId : f.firstUserId;
-        return friendId === chatMsg.senderId.toString();
+        const friendId = String(f.firstUserId) === String(chatMsg.senderId) ? String(f.secondUserId) : String(f.firstUserId);
+        const otherPartyIdInMsg = String(f.firstUserId) === String(chatMsg.senderId) ? String(chatMsg.receiverId) : String(chatMsg.senderId);
+        // 确保好友关系中的另一方是消息的接收者或发送者
+        // 且消息的发送者是我们正在查找的对方
+        return (String(f.firstUserId) === String(chatMsg.senderId) && String(f.secondUserId) === String(chatMsg.receiverId)) ||
+               (String(f.secondUserId) === String(chatMsg.senderId) && String(f.firstUserId) === String(chatMsg.receiverId));
       });
-      
+
       if (friend) {
-        // 判断当前用户是firstUser还是secondUser
-        const isFirst = friend.firstUserId === currentUserId.value.toString();
-        chatMsg.sender = isFirst ? friend.secondUsername : friend.firstUsername;
+         // 如果当前登录用户是好友关系中的 a，那么消息发送者 b 的用户名是 friend.secondUsername
+         // 如果当前登录用户是好友关系中的 b，那么消息发送者 a 的用户名是 friend.firstUsername
+         // 但我们是为非自己的消息填充 sender，所以直接用 rawMsg.senderName (如果后端有) 或通过 senderId 查
+         // 对于 normalizeMessage 来说，它应该从 rawMsg 中获取信息
+         chatMsg.sender = rawMsg.senderName || '未知用户'; // 优先用后端提供的 senderName
       } else {
-        chatMsg.sender = '';
+         chatMsg.sender = rawMsg.senderName || '未知用户'; // 保底
       }
-    } 
-    // 群聊消息，如果有 sender 则使用，否则尝试查找用户名
-    else if (type === 'group') {
-      if (rawMsg.sender) {
+
+    } else if (type === 'group') {
+      // 群聊消息：优先使用后端直接提供的 senderName
+      if (rawMsg.senderName) {
+        chatMsg.sender = rawMsg.senderName;
+      } else if (rawMsg.sender) { // 兼容可能仍然使用 sender 字段的情况
         chatMsg.sender = rawMsg.sender;
       } else {
-        // 查找新格式的好友以匹配用户名
-        const friend = friends.value.find(f => {
-          const isFirst = f.firstUserId === currentUserId.value.toString();
-          const friendId = isFirst ? f.secondUserId : f.firstUserId;
-          return friendId === chatMsg.senderId.toString();
-        });
-        
-        if (friend) {
-          const isFirst = friend.firstUserId === currentUserId.value.toString();
-          chatMsg.sender = isFirst ? friend.secondUsername : friend.firstUsername;
-        } else {
-          chatMsg.sender = '未知用户';
-        }
+        // 如果后端既没有 senderName 也没有 sender，作为最后手段
+        // 但理论上后端现在总会有 senderName
+        // logger.warn(`[ChatView] Group message from senderId ${chatMsg.senderId} missing senderName and sender.`);
+        chatMsg.sender = '未知用户'; 
       }
     }
   }
+  // 如果经过上述逻辑后 chatMsg.sender 仍为空，但 chatMsg.senderName 有值，则使用它
+  // 这主要针对非自己发送的消息，因为自己的消息 sender 会被 currentUser.value 覆盖
+  if (!chatMsg.sender && chatMsg.senderName) {
+    chatMsg.sender = chatMsg.senderName;
+  }
+
   return chatMsg;
 };
 
+// 辅助函数: 通过 groupId 查找群组名
+const findGroupName = (groupId) => {
+  const group = groups.value.find(g => g.groupId === groupId);
+  return group ? (group.groupName || group.name) : null;
+};
+
+// 群组邀请相关
+const showGroupInvitations = () => {
+  groupInvitationsVisible.value = true;
+};
+
+// 显示邀请好友对话框
+const showInviteDialog = () => {
+  inviteForm.value = { friendId: null };
+  inviteDialogVisible.value = true;
+};
+
+// 处理邀请好友加入群组
+const handleInvite = async () => {
+  if (!inviteForm.value.friendId) {
+    ElMessage.warning('请选择要邀请的好友');
+    return;
+  }
+  
+  if (!selectedContact.value || chatType.value !== 'group') {
+    ElMessage.error('没有选中群组');
+    return;
+  }
+  
+  inviteLoading.value = true;
+  try {
+    const success = await inviteUserToGroup(selectedContact.value.groupId, inviteForm.value.friendId);
+    if (success) {
+      inviteDialogVisible.value = false;
+      ElMessage.success('邀请已发送');
+    }
+  } catch (error) {
+    console.error('邀请好友失败:', error);
+    ElMessage.error(`邀请失败: ${error.message || '请稍后再试'}`);
+  } finally {
+    inviteLoading.value = false;
+  }
+};
 </script>
 
 <style scoped>
@@ -503,6 +903,7 @@ const normalizeMessage = (rawMsg, type) => {
   overflow: hidden;
   background-color: var(--secondary-color);
   transition: all var(--transition-normal);
+  position: relative; /* 添加相对定位以便侧边栏能够正确定位 */
 }
 
 /* Ensure child components (ChatArea/WelcomeScreen) fill the area */
@@ -511,6 +912,44 @@ const normalizeMessage = (rawMsg, type) => {
   min-height: 0; /* Important for flexbox shrinking */
 }
 
-/* Adjust paths if components are moved */
+.group-info-btn {
+  margin-left: auto;
+  color: #ffffff;
+}
 
+.group-detail-sidebar {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 0;
+  height: 100%;
+  background-color: var(--secondary-color);
+  border-left: 0px solid var(--border-color);
+  overflow: hidden;
+  transition: all 0.3s ease-in-out;
+  box-shadow: -5px 0 15px rgba(0, 0, 0, 0.1);
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+}
+
+.sidebar-open {
+  width: 320px;
+  border-left: 1px solid var(--border-color);
+}
+
+.sidebar-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--gradient-primary);
+}
+
+.sidebar-header h3 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+}
 </style>

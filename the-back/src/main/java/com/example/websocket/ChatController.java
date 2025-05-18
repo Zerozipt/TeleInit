@@ -17,7 +17,6 @@ import jakarta.annotation.Resource;
 import com.example.utils.Const;
 import java.util.concurrent.TimeUnit;
 import com.alibaba.fastjson2.JSON;
-import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -37,7 +36,12 @@ import com.example.entity.dto.Group_message;
 import java.util.stream.Collectors;
 import com.example.utils.ConvertUtils;
 import java.util.ArrayList;
+import java.util.Map;
 import com.example.entity.vo.response.StatusMessage;
+import com.example.service.OnlineStatusService;
+import java.time.Duration;
+import org.springframework.beans.factory.annotation.Autowired;
+import com.example.service.ChatCacheService;
 @RestController
 @RequestMapping("/api/chat")
 public class ChatController {
@@ -48,11 +52,7 @@ public class ChatController {
     private RabbitTemplate rabbitTemplate;
 
     @Resource
-    private StringRedisTemplate stringRedisTemplate;
-
-    @Resource
-    private  SimpMessagingTemplate messagingTemplate;
-    // private final ChatService chatService; // 移除
+    private SimpMessagingTemplate messagingTemplate;
 
     @Resource
     private ChatService chatService;
@@ -60,6 +60,11 @@ public class ChatController {
     @Resource
     private JwtUtils jwtUtils;
 
+    @Autowired
+    private OnlineStatusService onlineStatusService;
+
+    @Autowired
+    private ChatCacheService chatCacheService;
 
     ChatController(AccountServiceImpl accountServiceImpl) {
         this.accountServiceImpl = accountServiceImpl;
@@ -104,17 +109,67 @@ public class ChatController {
             DecodedJWT decodedJWT = jwtUtils.resolveJWTFromLocalStorage(jwt);
             String userId = decodedJWT.getClaim("id").asString();
             //通过用户id,构建一个返回message，包括用户id，用户名，用户的好友关系和群聊关系
-            //从redis中获取用户的好友关系和群聊关系,转化成json
             List<FriendsResponse> friendIds = chatService.getFriends(userId);
-            //从redis中获取用户的好友请求
+
             List<FriendsResponse> friendRequests = chatService.getFriendRequests(userId);
-            //从redis中获取群聊关系
+
             List<Group_member> groupIds = chatService.getGroups(userId);
-            //从redis中获取群聊消息  
+ 
             List<List<Group_message>> groupMessages = groupIds.stream().map(groupId -> chatService.getGroupChatHistoryByGroupId(groupId.getGroupId(), 100)).collect(Collectors.toList());
-            //从redis中获取私聊消息
+   
             List<PrivateChatMessage> privateMessages = chatService.getPrivateChatHistory(Integer.parseInt(userId), 100);
-            System.out.println("群组列表: " + groupIds);
+            // 将私聊消息转换为包含用户名的 JSON 对象列表
+            List<JSONObject> privateMessagesWithNames = new ArrayList<>();
+            for (PrivateChatMessage msg : privateMessages) {
+                JSONObject m = new JSONObject();
+                m.put("id", msg.getId());
+                m.put("senderId", msg.getSenderId());
+                m.put("senderName", accountServiceImpl.getAccountById(msg.getSenderId()).getUsername());
+                m.put("receiverId", msg.getReceiverId());
+                m.put("receiverName", accountServiceImpl.getAccountById(msg.getReceiverId()).getUsername());
+                m.put("content", msg.getContent());
+                m.put("isRead", msg.isRead());
+                m.put("createdAt", msg.getCreatedAt());
+                m.put("fileUrl", msg.getFileUrl());
+                m.put("fileName", msg.getFileName());
+                m.put("fileType", msg.getFileType());
+                m.put("fileSize", msg.getFileSize());
+                m.put("messageType", msg.getMessageType());
+                
+                if (msg.getMessageType() == null && msg.getFileUrl() != null && !msg.getFileUrl().isEmpty()) {
+                    String messageType = "FILE";
+                    if (msg.getFileType() != null) {
+                        if (msg.getFileType().startsWith("image/")) {
+                            messageType = "IMAGE";
+                        } else if (msg.getFileType().startsWith("video/")) {
+                            messageType = "VIDEO";
+                        } else if (msg.getFileType().startsWith("audio/")) {
+                            messageType = "AUDIO"; 
+                        }
+                    }
+                    m.put("messageType", messageType);
+                }
+                privateMessagesWithNames.add(m);
+            }
+            
+            // 处理群组消息，确保文件元数据完整
+            for (List<Group_message> messages : groupMessages) {
+                for (Group_message msg : messages) {
+                    if (msg.getMessageType() == null) {
+                        if (msg.getFileUrl() != null && !msg.getFileUrl().isEmpty()) {
+                            if (msg.getContentType() == 1) {
+                                msg.setMessageType("IMAGE");
+                            } else if (msg.getContentType() == 2) {
+                                msg.setMessageType("FILE");
+                            } else {
+                                msg.setMessageType("FILE"); // 默认为文件类型
+                            }
+                        } else {
+                            msg.setMessageType("TEXT"); // 没有文件URL则为文本消息
+                        }
+                    }
+                }
+            }
             //构建返回message，包括用户id，用户名，用户的好友关系和群聊关系，要求返回的格式为json
             JSONObject jsonObject = new JSONObject();
             jsonObject.put("userId", userId);
@@ -123,8 +178,7 @@ public class ChatController {
             jsonObject.put("friendRequests", JSON.toJSONString(friendRequests));
             jsonObject.put("groupIds", JSON.toJSONString(groupIds));
             jsonObject.put("groupMessages", JSON.toJSONString(groupMessages));
-            jsonObject.put("privateMessages", JSON.toJSONString(privateMessages));
-            System.out.println("返回的message: " + jsonObject);
+            jsonObject.put("privateMessages", JSON.toJSONString(privateMessagesWithNames));
             return messageHandler(() -> jsonObject);
         } catch (Exception e) {
             System.err.println("获取用户信息错误: " + e.getMessage());
@@ -137,74 +191,104 @@ public class ChatController {
     // 处理公共消息 - 简化为固定频道
     // 逻辑是，用户发送的消息都发送到一个频道，然后前端根据频道id订阅对应的频道
     // 然后后端根据频道id，将消息发送到对应的频道，可行性的原因是订阅频道是可以动态注册的
-    @MessageMapping("/chat/channel") // 移除 {groupId}
-    public void handlePublicMessage(@Payload ChatMessage message, // 只接收内容即可，其他由后端填充
-                                         CustomPrincipal principal) {
+    @MessageMapping("/chat/channel")
+    public void handlePublicMessage(@Payload ChatMessage message, CustomPrincipal principal) {
         System.out.println("群组消息: " + message);
         // 填充发送者和时间戳
         message.setSenderId(Integer.parseInt(principal.getName()));
         message.setSender(principal.getUsername());
-        // 使用 Instant 获取 ISO 8601 格式时间戳，更标准
-        // 如果 ChatMessage 需要 Date，则转换，否则直接用 String
-        message.setTimestamp(Date.from(Instant.now())); // 或者直接设置 String 类型的时间戳
-        //从message中获取groupId
-        String groupId = message.getGroupId();
-        System.out.println("群组消息: " + message);
-        // chatService.savePublicMessage(message); // 移除数据库保存
-        //将消息发送到群聊队列,进行消息的持久化,先发送到队列，再保存到redis
+        message.setTimestamp(Date.from(Instant.now()));
+        
+        // 检查文件消息并设置正确的消息类型
+        if (message.getFileUrl() != null && !message.getFileUrl().isEmpty() && message.getMessageType() == null) {
+            message.setMessageType("FILE");
+        }
+        
+        // 缓存群组消息
+        String groupId = message.getGroupId() != null ? message.getGroupId() : "default";
         rabbitTemplate.convertAndSend("groupChat", message);
-        String key = Const.GROUP_CHAT_KEY + (message.getGroupId() != null ? message.getGroupId() : "default");
-        // 将消息转为JSON保存
-        stringRedisTemplate.opsForList().rightPush(key, JSON.toJSONString(message));
-        // 设置过期时间
-        stringRedisTemplate.expire(key, Const.MESSAGE_EXPIRE_DAYS, TimeUnit.DAYS);
+        chatCacheService.cacheGroupMessage(groupId, JSON.toJSONString(message));
         // 传递完整的 message 对象
         this.sendMessageToGroup(groupId, message);
+        
+        // 群组消息也要单独发给发送者自己，确保UI显示一致
+        messagingTemplate.convertAndSendToUser(
+            principal.getName(),
+            "/queue/channel",
+            message
+        );
     }
 
     // 处理私人消息 - 简化，不使用路径变量
-    @MessageMapping("/chat/private") // 移除 {friendId}
-    public void handlePrivateMessage(@Payload ChatMessage message, // 消息体需要包含 toUser 和 content
-                                    CustomPrincipal principal) {
-        // 填充发送者和时间戳
+    @MessageMapping("/chat/private")
+    public void handlePrivateMessage(@Payload ChatMessage message, CustomPrincipal principal) {
+        // 填充发送者信息和时间戳
         message.setSender(principal.getUsername());
         message.setSenderId(Integer.parseInt(principal.getName()));
-        message.setTimestamp(Date.from(Instant.now())); // 或者 String
+        message.setTimestamp(Date.from(Instant.now()));
 
-        // System.out.println("私有消息: 从 " + message.getFromUserId() + " 到 " + message.getToUserId() + ": " + message.getContent());
-        // 验证接收者是否存在 (简单检查，实际应用可能需要查用户服务)
         if (message.getReceiverId() == null) {
-             System.err.println("无效的私聊消息：接收者不能为空。");
-             // 可以选择性地通知发送者错误，这里仅记录日志
-             return;
+            System.err.println("无效的私聊消息：接收者不能为空。");
+            return;
         }
-        //将消息发送到私聊队列,进行消息的持久化,先发送到队列，再保存到mysql
-        rabbitTemplate.convertAndSend("privateChat", message);
-        //先将消息保存到redis
-        //设置key为PRIVATE_CHAT_KEY+senderId
-        String key = Const.PRIVATE_CHAT_KEY + message.getSenderId();
-        stringRedisTemplate.opsForList().rightPush(key, JSON.toJSONString(message));
-        // 设置过期时间
-        stringRedisTemplate.expire(key, Const.MESSAGE_EXPIRE_DAYS, TimeUnit.DAYS);
         
+        // 异步持久化和 Redis 操作由 PrivateChatMessageListener 及 savePrivateMessage 处理
+        rabbitTemplate.convertAndSend("privateChat", message);
+        
+        // 实时推送给接收者
         messagingTemplate.convertAndSendToUser(
             message.getReceiverId().toString(),
-            "/queue/private", // 客户端需要订阅 /user/queue/private
+            "/queue/private",
             message
         );
         
+        // 新增：对于文件消息，也推送给发送者自己以便在UI上显示
+        // 检查是否是文件消息
+        boolean isFileMessage = false;
+        if (message.getMessageType() != null && 
+           (message.getMessageType().equalsIgnoreCase("FILE") || 
+            message.getMessageType().equalsIgnoreCase("IMAGE") || 
+            message.getMessageType().equalsIgnoreCase("VIDEO") || 
+            message.getMessageType().equalsIgnoreCase("AUDIO"))) {
+            isFileMessage = true;
+        } else if (message.getFileUrl() != null && !message.getFileUrl().isEmpty()) {
+            isFileMessage = true;
+            // 如果没有指定消息类型但有文件URL，默认设为FILE类型
+            if (message.getMessageType() == null) {
+                message.setMessageType("FILE");
+            }
+        }
+        
+        // 文件消息或者普通消息都要发给自己
+        messagingTemplate.convertAndSendToUser(
+            principal.getName(),
+            "/queue/private",
+            message
+        );
+        
+        System.out.println("发送" + (isFileMessage ? "文件" : "文本") + "消息: " + message);
     }
 
     // 处理心跳包
     @MessageMapping("/chat/heartbeat")
     @SendTo("/topic/public/general")
     public void handleHeartbeat(Principal principal) {
-        if(principal == null){
-
+        if (principal == null) {
             return;
         }
-        System.out.println("收到心跳包: " + principal.getName());
-        // 返回心跳包 前端收到心跳包后，更新心跳包的时间
+        
+        // 更新用户在线状态
+        String userId = principal.getName();
+        boolean refreshed = onlineStatusService.refreshOnline(userId, Duration.ofSeconds(30));
+        if (refreshed) {
+            System.out.println("用户 " + userId + " 心跳，在线状态已刷新");
+        } else {
+            // 如果状态不存在或刷新失败，重新设置
+            onlineStatusService.markOnline(userId, Duration.ofSeconds(30));
+            System.out.println("用户 " + userId + " 心跳，在线状态已设置");
+        }
+        
+        // 返回心跳包，前端收到心跳包后更新
         messagingTemplate.convertAndSendToUser(
             principal.getName(),
             "/queue/heartbeat",
@@ -216,23 +300,30 @@ public class ChatController {
 
     // 处理系统消息
     @MessageMapping("/system/radiate")
-    public void handleSystemMessage(Principal principal, String message) {
+    public void handleSystemMessage(Principal principal, Map<String, Object> message) {
         System.out.println("收到系统消息: " + message);
     }
 
     @MessageMapping("/system/offline")
     public void handleOffline(Principal principal, StatusMessage message) {
         System.out.println("收到离线消息: " + principal.getName());
+        
+        // 标记离线
+        String userId = message.getUserId();
+        onlineStatusService.markOffline(userId);
+        System.out.println("用户 " + userId + " 下线，在线状态已删除");
+        
+        // 通知好友用户已下线
         List<FriendsResponse> friends = chatService.getFriends(message.getUserId());
         for (FriendsResponse friend : friends) {
-            if(friend.getSecondUserId() == message.getUserId()){
+            if(friend.getSecondUserId().equals(message.getUserId())){
                 messagingTemplate.convertAndSendToUser(
                     friend.getFirstUserId(),
                     "/queue/offline",
                     message
                 );
             }
-            else if(friend.getFirstUserId() == message.getUserId()){
+            else if(friend.getFirstUserId().equals(message.getUserId())){
                 messagingTemplate.convertAndSendToUser(
                     friend.getSecondUserId(),
                     "/queue/offline",
@@ -244,46 +335,90 @@ public class ChatController {
 
     @MessageMapping("/system/online")
     public void handleOnline(Principal principal, StatusMessage message) {
-        System.out.println("收到上线消息: " + principal.getName());
-        List<FriendsResponse> friends = chatService.getFriends(message.getUserId());
+        System.out.println("收到上线消息: " + message);
+        // 使用 principal 获取用户 ID，确保不为空
+        String userId = principal.getName();
+        message.setUserId(userId);
+        // 标记上线
+        onlineStatusService.markOnline(userId, Duration.ofSeconds(30));
+        System.out.println("用户 " + userId + " 上线，在线状态已设置");
+        // 通知所有好友
+        List<FriendsResponse> friends = chatService.getFriends(userId);
         for (FriendsResponse friend : friends) {
-            if(friend.getSecondUserId() == message.getUserId()){
-                messagingTemplate.convertAndSendToUser(
-                    friend.getFirstUserId(),
+            String targetId = friend.getSecondUserId().equals(userId)
+                    ? friend.getFirstUserId()
+                    : friend.getSecondUserId();
+            System.out.println("发送上线消息给: " + targetId);
+            messagingTemplate.convertAndSendToUser(
+                    targetId,
                     "/queue/online",
                     message
-                );
-            }
-            else if(friend.getFirstUserId() == message.getUserId()){
-                messagingTemplate.convertAndSendToUser(
-                    friend.getSecondUserId(),
-                    "/queue/online",    
-                    message
-                );
-            }
+            );
         }
     }
 
     @GetMapping("/history/private")
-    public RestBean<JSONObject> getPrivateChatHistory(@RequestParam String userId, @RequestParam String friendId) {
-        //直接从redis中获取私聊消息
-        String key = Const.PRIVATE_CHAT_KEY + userId;
-        List<String> privateMessages = stringRedisTemplate.opsForList().range(key, 0, -1);
-        //将privateMessages转换为PrivateChatMessage
-        if(privateMessages == null || privateMessages.size() == 0){
-            return null;
-        }   
-
-        List<PrivateChatMessage> messages = new ArrayList<>();
-        for (String json : privateMessages) {
-            List<PrivateChatMessage> message = JSON.parseArray(json, PrivateChatMessage.class);
-            messages.addAll(message);
-        }
-        //从拿到的数据中，找到friendId对应的消息
-        List<PrivateChatMessage> friendMessages = messages.stream().filter(message -> String.valueOf(message.getReceiverId()).equals(friendId)).collect(Collectors.toList());
+    public RestBean<JSONObject> getPrivateChatHistory(@RequestParam String userId, @RequestParam String friendId, @RequestParam String oldestMessageId) {
+        List<PrivateChatMessage> privateMessages = chatService.getPrivateChatHistoryByUserIdAndFriendId(Integer.parseInt(userId), Integer.parseInt(friendId), 100, oldestMessageId);
         JSONObject jsonObject = new JSONObject();
-        jsonObject.put("privateMessages", JSON.toJSONString(friendMessages));
+        // 将私聊消息转换为包含用户名的 JSON 对象列表
+        List<JSONObject> privateMessagesWithNames = new ArrayList<>();
+        for (PrivateChatMessage msg : privateMessages) {
+            JSONObject m = new JSONObject();
+            m.put("id", msg.getId());
+            m.put("senderId", msg.getSenderId());
+            m.put("senderName", accountServiceImpl.getAccountById(msg.getSenderId()).getUsername());
+            m.put("receiverId", msg.getReceiverId());
+            m.put("receiverName", accountServiceImpl.getAccountById(msg.getReceiverId()).getUsername());
+            m.put("content", msg.getContent());
+            m.put("isRead", msg.isRead());
+            m.put("createdAt", msg.getCreatedAt());
+            m.put("fileUrl", msg.getFileUrl());
+            m.put("fileName", msg.getFileName());
+            m.put("fileType", msg.getFileType());
+            m.put("fileSize", msg.getFileSize());
+            m.put("messageType", msg.getMessageType());
+            
+            if (msg.getMessageType() == null && msg.getFileUrl() != null && !msg.getFileUrl().isEmpty()) {
+                String messageType = "FILE";
+                if (msg.getFileType() != null) {
+                    if (msg.getFileType().startsWith("image/")) {
+                        messageType = "IMAGE";
+                    } else if (msg.getFileType().startsWith("video/")) {
+                        messageType = "VIDEO";
+                    } else if (msg.getFileType().startsWith("audio/")) {
+                        messageType = "AUDIO"; 
+                    }
+                }
+                m.put("messageType", messageType);
+            }
+            privateMessagesWithNames.add(m);
+        }
+        jsonObject.put("privateMessages", JSON.toJSONString(privateMessagesWithNames));
         return messageHandler(() -> jsonObject);
     }
     
+    // 新增：获取群聊消息历史
+    @GetMapping("/history/group")
+    public RestBean<List<Group_message>> getGroupChatHistory(@RequestParam String groupId, @RequestParam int limit) {
+        List<Group_message> groupMessages = chatService.getGroupChatHistoryByGroupId(groupId, limit);
+        
+        groupMessages.forEach(msg -> {
+            if (msg.getMessageType() == null) {
+                if (msg.getFileUrl() != null && !msg.getFileUrl().isEmpty()) {
+                    if (msg.getContentType() == 1) {
+                        msg.setMessageType("IMAGE");
+                    } else if (msg.getContentType() == 2) {
+                        msg.setMessageType("FILE");
+                    } else {
+                        msg.setMessageType("FILE");
+                    }
+                } else {
+                    msg.setMessageType("TEXT");
+                }
+            }
+        });
+        
+        return RestBean.success(groupMessages);
+    }
 }

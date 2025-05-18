@@ -15,6 +15,10 @@ public class ChatMessage {
     private Integer senderId;  // 发送者ID
     private Integer receiverId; // 接收者ID(可选)
     private String fileUrl;    // 文件URL(可选)
+    private String messageType; // 前端发送的更具体的消息类型 (例如 "FILE", "IMAGE", "TEXT")
+    private String fileName;   // 文件原始名称，用于下载时提供文件名
+    private String fileType;   // 文件MIME类型，如image/jpeg, application/pdf等
+    private Long fileSize;     // 文件大小（字节数）
     // 枚举定义消息类型
     public enum MessageType {
         CHAT, JOIN, LEAVE, NOTICE

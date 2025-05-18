@@ -35,7 +35,6 @@ public interface ChatService {
      */
     List<FriendsResponse> getFriends(String userId);
 
-    // 获取用户的好友请求
     List<FriendsResponse> getFriendRequests(String userId);
 
     // 获取用户所在的群组信息
@@ -70,7 +69,7 @@ public interface ChatService {
      * @param userId 用户ID
      * @return 好友请求列表
      */
-    List<Map<String, Object>> getReceivedFriendRequests(int userId);
+    boolean ReceivedFriendRequests(int senderId, int receiverId);
 
     /**
      * 接受好友请求
@@ -89,6 +88,22 @@ public interface ChatService {
     boolean rejectFriendRequest(int requestId, int userId);
 
     /**
+     * 取消已发送的好友请求
+     * @param currentUserId 当前用户ID (请求发送者)
+     * @param targetUserId 目标用户ID (请求接收者)
+     * @return 操作成功返回true，否则返回false
+     */
+    boolean cancelFriendRequest(int currentUserId, int targetUserId);
+
+    /**
+     * 接收者拒绝好友请求（根据用户ID）
+     * @param currentUserId 当前用户ID (请求接收者)
+     * @param senderIdOfRequest 好友请求的发送者ID
+     * @return 操作成功返回true，否则返回false
+     */
+    boolean rejectFriendRequestByUsers(int currentUserId, int senderIdOfRequest);
+
+    /**
      * 获取两个用户之间的私聊消息历史
      * @param user1 第一个用户名
      * @param user2 第二个用户名
@@ -97,6 +112,8 @@ public interface ChatService {
      */
     List<PrivateChatMessage> getPrivateChatHistory(int userId, int limit);
 
+
+    List<PrivateChatMessage> getPrivateChatHistoryByUserIdAndFriendId(int userId, int friendId, int limit, String oldestMessageId);
     /**
      * 获取群组的聊天消息历史
      * @param groupId 群组ID
@@ -104,5 +121,13 @@ public interface ChatService {
      * @return 群组消息列表
      */
     List<Group_message> getGroupChatHistoryByGroupId(String groupId, int limit);
+
+    /**
+     * 删除好友 (解除好友关系)
+     * @param userId1 用户ID1
+     * @param userId2 用户ID2
+     * @return 操作成功返回true，否则返回false
+     */
+    boolean removeFriend(int userId1, int userId2);
 
 } 

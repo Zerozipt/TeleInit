@@ -76,7 +76,12 @@
             :class="{ activeContact: isActive(friend, 'private') }"
           >
             <el-avatar size="large" :icon="User">{{ getFriendUsername(friend).charAt(0).toUpperCase() }}</el-avatar>
-            <span class="contact-name">{{ getFriendUsername(friend) }}</span>
+            <div class="contact-info">
+              <span class="contact-name">{{ getFriendUsername(friend) }}</span>
+              <span class="online-status" :class="{ 'online': friend.online }">
+                {{ friend.online ? '在线' : '离线' }}
+              </span>
+            </div>
           </div>
         </div>
         <div v-else class="empty-tip">暂无好友</div>
@@ -107,7 +112,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue';
 import stompClientInstance from '@/net/websocket';
 import { ElMessage } from 'element-plus';
 import { 
@@ -115,8 +120,11 @@ import {
   ChatLineRound, 
   ChatRound, 
   MessageBox, 
-  Search
+  Search,
+  Plus,
+  Bell
 } from '@element-plus/icons-vue';
+import { useRouter } from 'vue-router';
 
 const emit = defineEmits(['select-contact', 'show-notifications', 'show-add-friend', 'show-group-dialog']);
 
@@ -129,12 +137,20 @@ const activeTab = ref('friends');
 
 // 列表数据
 const friendNotifications = computed(() => stompClientInstance.friendRequests.value || []);
-const groupNotifications = ref([]);
+const groupNotifications = computed(() => stompClientInstance.groupInvitations.value || []);
 const friends = computed(() => stompClientInstance.friends.value || []);
 const groups = computed(() => stompClientInstance.groups.value || []);
 
 // 获取当前用户ID
 const getCurrentUserId = () => {
+  // 直接从WebSocket实例获取当前用户ID
+  const wsUserId = stompClientInstance.currentUserId.value;
+  
+  if (wsUserId) {
+    return wsUserId;
+  }
+  
+  // 作为备用方案，如果WebSocket实例还没有准备好，从localStorage获取
   try {
     const authData = localStorage.getItem('authorize');
     if (authData) {
@@ -277,13 +293,69 @@ const handleSystemMsg = (message) => {
   }
 };
 
+// 监听WebSocket中群组邀请更新事件
 onMounted(() => {
-  stompClientInstance.on('onSystemMessage', handleSystemMsg);
+  console.log('[ContactListSidebar] 组件挂载，开始监听群组邀请更新');
+  stompClientInstance.on('onGroupInvitationsUpdated', (invitations) => {
+    console.log('[ContactListSidebar] 收到群组邀请更新事件:', invitations);
+    // 如果当前正在显示群组通知，需要更新显示
+    if (activeNotification.value === 'group') {
+      emit('show-notifications', 'group', stompClientInstance.groupInvitations.value);
+    }
+    // 如果有新邀请，显示消息提示
+    if (invitations && invitations.length > 0) {
+      ElMessage.info(`收到${invitations.length}条群组邀请`);
+    }
+  });
+  
+  // 监听系统消息事件，处理群组邀请
+  stompClientInstance.on('onSystemMessage', (message) => {
+    console.log('[ContactListSidebar] 收到系统消息:', message);
+    if (message.type === 'groupInvite') {
+      // 收到群组邀请后立即刷新群组邀请列表
+      refreshGroupInvitations();
+      
+      // 显示通知
+      const inviterName = message.inviterName || ('用户' + message.inviterId);
+      const groupName = message.groupName || ('群组' + message.groupId);
+      ElMessage.info(`${inviterName} 邀请您加入群聊 ${groupName}`);
+    }
+  });
+  
+  // 首次加载时刷新群组邀请列表
+  refreshGroupInvitations();
+  
+  // 监听好友请求更新事件
+  const handleFriendRequestsUpdated = (requests) => {
+    if (activeNotification.value === 'friend') {
+      emit('show-notifications', 'friend', friendNotifications.value);
+    }
+  };
+  stompClientInstance.on('friendRequestsUpdated', handleFriendRequestsUpdated);
 });
 
 onBeforeUnmount(() => {
-  stompClientInstance.off('onSystemMessage', handleSystemMsg);
+  console.log('[ContactListSidebar] 组件卸载，移除事件监听');
+  stompClientInstance.off('onGroupInvitationsUpdated');
+  stompClientInstance.off('onSystemMessage');
+  stompClientInstance.off('friendRequestsUpdated', handleFriendRequestsUpdated);
 });
+
+// 刷新群组邀请列表
+const refreshGroupInvitations = () => {
+  console.log('[ContactListSidebar] 刷新群组邀请列表');
+  stompClientInstance.refreshGroupInvitations()
+    .then(invitations => {
+      console.log('[ContactListSidebar] 群组邀请列表已刷新:', invitations);
+      // 如果当前显示的是群组通知，更新显示
+      if (activeNotification.value === 'group') {
+        emit('show-notifications', 'group', invitations);
+      }
+    })
+    .catch(error => {
+      console.error('[ContactListSidebar] 刷新群组邀请列表失败:', error);
+    });
+};
 </script>
 
 <style scoped>
@@ -479,5 +551,21 @@ onBeforeUnmount(() => {
 .action-button .el-button--primary:hover {
   background-color: var(--accent-color-dark);
   border-color: var(--accent-color-dark);
+}
+.contact-info {
+  display: flex;
+  flex-direction: column;
+  margin-left: 10px;
+  flex: 1;
+}
+
+.online-status {
+  font-size: 12px;
+  color: #999;
+  margin-top: 2px;
+}
+
+.online-status.online {
+  color: #67c23a;
 }
 </style> 

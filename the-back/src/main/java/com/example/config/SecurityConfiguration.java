@@ -6,7 +6,6 @@ import com.example.entity.vo.response.AuthorizeVO;
 import com.example.filter.JwtAuthorizeFilter;
 import com.example.service.AccountService;
 import com.example.utils.JwtUtils;
-import jakarta.annotation.Resource;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServlet;        
 import jakarta.servlet.http.HttpServletRequest;
@@ -22,25 +21,24 @@ import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.userdetails.User;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+import org.springframework.beans.factory.annotation.Autowired;
+import com.example.filter.FlowLimitFilter;
 
 import java.io.IOException;
 import java.io.PrintWriter;
-import com.example.filter.FlowLimitFilter;
 
 @Configuration
 public class SecurityConfiguration {
 
-    @Resource
-    FlowLimitFilter flowLimitFilter;
+    @Autowired
+    private FlowLimitFilter flowLimitFilter;
 
-    @Resource
-    JwtUtils jwtUtils;
+    @Autowired
+    private JwtUtils jwtUtils;
 
-    @Resource
-    JwtAuthorizeFilter filter;
+    @Autowired
+    private AccountService accountService;
 
-    @Resource
-    AccountService accountService;
     /**
      * 配置Spring Security的安全过滤链。
      * @param http HttpSecurity实例

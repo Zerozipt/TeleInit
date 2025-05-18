@@ -2,6 +2,7 @@ package com.example.controller;
 
 import com.example.entity.dto.Group;
 import com.example.entity.dto.Group_member;
+import com.example.entity.vo.response.GroupDetailResponse;
 import com.example.service.AccountService; // 1. 导入 AccountService 接口
 import com.example.service.GroupService;
 // import com.example.service.impl.AccountServiceImpl; // 通常注入接口而非实现类
@@ -15,14 +16,21 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.web.bind.annotation.*;
-
+import com.auth0.jwt.JWT;
+import com.auth0.jwt.interfaces.DecodedJWT;
 import java.util.Map;
+import com.example.utils.JwtUtils;
+import com.example.entity.RestBean;
+import java.util.List;
 
 @RestController
 @RequestMapping("/api/groups")
 public class GroupController {
 
     private static final Logger log = LoggerFactory.getLogger(GroupController.class); // 添加日志记录器
+
+    @Resource
+    JwtUtils jwtUtils;
 
     @Resource
     GroupService groupService;
@@ -46,13 +54,20 @@ public class GroupController {
      */
     @PostMapping
     public ResponseEntity<?> createGroup(@RequestBody CreateGroupRequest request,
-                                         @AuthenticationPrincipal UserDetails userDetails) {
+    @org.springframework.web.bind.annotation.RequestHeader(value = "Authorization", required = false) String authorization)
+     {
         try {
-            if (userDetails == null) {
-                return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of("error", "用户未认证"));
+            String jwt = null;
+            if (authorization != null && authorization.startsWith("Bearer ")) {
+                jwt = authorization.substring(7);
             }
-            String username = userDetails.getUsername();
-
+            
+            if (jwt == null) {
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of("error", "未提供JWT令牌,请重新登陆"));
+            }
+            //解析jwt
+            DecodedJWT decodedJWT = jwtUtils.resolveJWTFromLocalStorage(jwt);
+            String username = decodedJWT.getClaim("name").asString();
             // 3. 使用 AccountService 通过用户名查找 int 类型的用户 ID
             //    假设方法名为 findAccountIdByUsername，你需要根据实际情况修改
             int creatorId;
@@ -95,12 +110,20 @@ public class GroupController {
     // 5. 修改 API 路径以反映按名称加入
     @PostMapping("/{groupName}/members")
     public ResponseEntity<?> joinGroup(@PathVariable String groupName, // <-- 5. 修改 @PathVariable 对应名称
-                                       @AuthenticationPrincipal UserDetails userDetails) {
+                                       @org.springframework.web.bind.annotation.RequestHeader(value = "Authorization", required = false) String authorization)
+                                       {
         try {
-            if (userDetails == null) {
-                return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of("error", "用户未认证"));
+            String jwt = null;
+            if (authorization != null && authorization.startsWith("Bearer ")) {
+                jwt = authorization.substring(7);
             }
-            String username = userDetails.getUsername();
+            
+            if (jwt == null) {
+                    return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of("error", "未提供JWT令牌,请重新登陆"));
+                }
+            //解析jwt
+            DecodedJWT decodedJWT = jwtUtils.resolveJWTFromLocalStorage(jwt);
+            String username = decodedJWT.getClaim("name").asString();
 
             // 6. 使用 AccountService 通过用户名查找 int 类型的用户 ID
             int userId;
@@ -133,6 +156,131 @@ public class GroupController {
             // 其他 RuntimeException 视为内部错误
             log.error("加入群聊 {} 失败: {}", groupName, e.getMessage(), e); // 记录内部错误
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("error", "加入群聊时发生内部错误")); // 不要暴露过多细节
+        }
+    }
+
+    @PostMapping("/getGroupList")
+    public RestBean<?> getGroupList(
+        @org.springframework.web.bind.annotation.RequestHeader(value = "Authorization", required = false) String authorization,
+        @RequestBody Map<String, Object> requestBody
+    )
+    {
+        try {
+            String groupName = (String) requestBody.get("groupName");
+            String jwt = null;
+            if (authorization != null && authorization.startsWith("Bearer ")) {
+                jwt = authorization.substring(7);
+            }
+            if (jwt == null) {
+                return RestBean.unauthorized("未提供JWT令牌,请重新登陆");
+            }
+            //从mysql中获取groupName对应的group
+            List<Group> group = groupService.getGroupByName(groupName);
+            if (group == null) {
+                return RestBean.failure(404, "群聊不存在");
+            }   
+            return RestBean.success(group);
+        } catch (Exception e) {
+            log.error("获取群聊列表失败: {}", e.getMessage(), e);
+            return RestBean.failure(500, "获取群聊列表失败：");
+        }
+    }
+
+    @PostMapping("/getGroupMembers")
+    public RestBean<?> getGroupMembers(
+        @org.springframework.web.bind.annotation.RequestHeader(value = "Authorization", required = false) String authorization
+    )
+    {
+        try {
+            String jwt = null;
+            if (authorization != null && authorization.startsWith("Bearer ")) {
+                jwt = authorization.substring(7);
+            }
+            if (jwt == null) {
+                return RestBean.unauthorized("未提供JWT令牌,请重新登陆");
+            }
+            //解析jwt
+            DecodedJWT decodedJWT = jwtUtils.resolveJWTFromLocalStorage(jwt);
+            String userId = decodedJWT.getClaim("id").asString();
+            //从mysql中获取userid加入的群组
+            int userIdInt = Integer.parseInt(userId);
+            List<Group_member> group_member = groupService.getGroupMembers(userIdInt);
+            return RestBean.success(group_member);
+        } catch (Exception e) {
+            log.error("获取群聊成员列表失败: {}", e.getMessage(), e);
+            return RestBean.failure(500, "获取群聊成员列表失败：");
+        }
+    }
+
+    /**
+     * 获取群组详情，包括所有成员和角色
+     */
+    @GetMapping("/{groupId}/detail")
+    public RestBean<?> getGroupDetail(
+            @PathVariable String groupId,
+            @RequestHeader(value = "Authorization", required = false) String authorization) {
+        try {
+            String jwt = null;
+            if (authorization != null && authorization.startsWith("Bearer ")) {
+                jwt = authorization.substring(7);
+            }
+            
+            if (jwt == null) {
+                return RestBean.unauthorized("未提供JWT令牌,请重新登陆");
+            }
+            
+            // 解析JWT获取用户ID
+            DecodedJWT decodedJWT = jwtUtils.resolveJWTFromLocalStorage(jwt);
+            int userId = Integer.parseInt(decodedJWT.getClaim("id").asString());
+            
+            // 验证用户是否为群组成员
+            if (!groupService.isGroupMember(groupId, userId)) {
+                return RestBean.failure(403, "只有群组成员才能查看群组详情");
+            }
+            
+            // 获取群组详情
+            GroupDetailResponse groupDetail = groupService.getGroupDetail(groupId);
+            
+            if (groupDetail == null) {
+                return RestBean.failure(404, "群组不存在");
+            }
+            
+            return RestBean.success(groupDetail);
+            
+        } catch (Exception e) {
+            log.error("获取群组详情失败: {}", e.getMessage(), e);
+            return RestBean.failure(500, "获取群组详情失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 退出群组
+     * @param groupId 群组ID
+     * @param authorization JWT令牌
+     * @return 操作结果
+     */
+    @PostMapping("/{groupId}/exit")
+    public RestBean<Boolean> exitGroup(
+            @PathVariable String groupId,
+            @RequestHeader(value = "Authorization", required = false) String authorization) {
+        try {
+            if (authorization == null || !authorization.startsWith("Bearer ")) {
+                return RestBean.failure(401, "未提供JWT令牌");
+            }
+            String jwt = authorization.substring(7);
+            DecodedJWT decodedJWT = jwtUtils.resolveJWTFromLocalStorage(jwt);
+            int userId = Integer.parseInt(decodedJWT.getClaim("id").asString());
+            if (!groupService.isGroupMember(groupId, userId)) {
+                return RestBean.failure(403, "您不是该群组成员");
+            }
+            boolean result = groupService.leaveGroup(groupId, userId);
+            if (result) {
+                return RestBean.success(true);
+            } else {
+                return RestBean.failure(500, "退出群组失败");
+            }
+        } catch (Exception e) {
+            return RestBean.failure(500, "退出群组异常: " + e.getMessage());
         }
     }
 }

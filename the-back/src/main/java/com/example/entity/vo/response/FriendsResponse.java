@@ -12,9 +12,12 @@ public class FriendsResponse {
     private String secondUsername;
     private Date created_at;
     private Status status;
+    private boolean isOnline;
+    
     public enum Status {
-        requested,
-        accepted,
-        deleted
+        requested, //请求
+        accepted, //接受
+        rejected, //拒绝
+        deleted //删除
     }
 }
