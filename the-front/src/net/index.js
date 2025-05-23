@@ -1,13 +1,29 @@
 import axios from "axios";
 import {ElMessage} from "element-plus";
 import router from "@/router";
+import { getAuthToken, setAuthToken, clearAuthToken, getAuthData, getAuthHeaders } from "@/utils/auth";
 // import { WebSocket } from 'ws';
 const authItemName = "authorize"
 
-const accessHeader = () => {
-    return {
-        'Authorization': `Bearer ${takeAccessToken()?.token}`
+// 使用统一的认证工具替代原有的token管理函数
+function takeAccessToken() {
+    return getAuthData();
+}
+
+function storeAccessToken(remember, token, expire, role, username){
+    setAuthToken(remember, token, expire, role, username);
+}
+
+function deleteAccessToken(redirect = false) {
+    clearAuthToken();
+    if(redirect) {
+        router.push({ name: 'welcome-login' });
     }
+}
+
+// 使用统一的认证头获取函数
+const accessHeader = () => {
+    return getAuthHeaders();
 }
 
 const defaultError = (error) => {
@@ -23,37 +39,6 @@ const defaultError = (error) => {
 const defaultFailure = (message, status, url) => {
     console.warn(`请求地址: ${url}, 状态码: ${status}, 错误信息: ${message}`)
     ElMessage.warning(message)
-}
-
-function takeAccessToken() {
-    const str = localStorage.getItem(authItemName) || sessionStorage.getItem(authItemName);
-    if(!str){
-        return null
-    }
-    const authObj = JSON.parse(str)
-    if(authObj.expire <= new Date()) {
-        deleteAccessToken()
-        ElMessage.warning("登录状态已过期，请重新登录！")
-        return null
-    }
-    return authObj
-}
-
-function storeAccessToken(remember, token, expire, role){
-    const authObj = { token, expire, role }
-    const str = JSON.stringify(authObj)
-    if(remember)
-        localStorage.setItem(authItemName, str)
-    else
-        sessionStorage.setItem(authItemName, str)
-}
-
-function deleteAccessToken(redirect = false) {
-    localStorage.removeItem(authItemName)
-    sessionStorage.removeItem(authItemName)
-    if(redirect) {
-        router.push({ name: 'welcome-login' })
-    }
 }
 
 function internalPost(url, data, headers, success, failure, error = defaultError){
@@ -89,7 +74,8 @@ function login(username, password, remember, success, failure = defaultFailure){
     }, {
         'Content-Type': 'application/x-www-form-urlencoded'
     }, (data) => {
-        storeAccessToken(remember, data.token, data.expire, data.role)
+        // 使用新的存储函数，传入username信息
+        storeAccessToken(remember, data.token, data.expire, data.role, data.username)
         ElMessage.success(`登录成功，欢迎 ${data.username} 来到我们的系统`)
         success(data)
     }, failure)

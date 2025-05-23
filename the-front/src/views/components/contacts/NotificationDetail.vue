@@ -22,6 +22,20 @@
                 <el-button type="danger" size="small" @click="handleCancel(notification)">取消请求</el-button>
               </div>
               
+              <div v-else-if="notification.displayStatus === 'accepting' || notification.status === 'accepting'" class="status-badge">
+                <el-tag type="warning" effect="plain">
+                  <el-icon class="is-loading"><Loading /></el-icon>
+                  处理中...
+                </el-tag>
+              </div>
+              
+              <div v-else-if="notification.displayStatus === 'rejecting' || notification.status === 'rejecting'" class="status-badge">
+                <el-tag type="info" effect="plain">
+                  <el-icon class="is-loading"><Loading /></el-icon>
+                  处理中...
+                </el-tag>
+              </div>
+              
               <div v-else class="status-badge">
                 <el-tag :type="getTagType(notification.displayStatus || notification.status)">
                   {{ getStatusText(notification.displayStatus || notification.status) }}
@@ -42,6 +56,7 @@
 <script setup>
 import { computed } from 'vue';
 import { ElMessage } from 'element-plus';
+import { Loading } from '@element-plus/icons-vue';
 import { acceptFriendRequest, rejectFriendRequest, cancelFriendRequest } from '@/api/friendApi';
 import { respondToGroupInvitation } from '@/api/groupApi';
 import stompClientInstance from '@/net/websocket';
@@ -111,17 +126,6 @@ const getStatusType = (notification) => {
   }
 };
 
-// 返回标签类型，用于el-tag的type属性
-const getTagType = (status) => {
-  switch (status) {
-    case 'accepted': return 'success';
-    case 'rejected': 
-    case 'deleted': return 'danger';
-    case 'sent': return 'info';
-    default: return 'info';
-  }
-};
-
 // 返回状态文本
 const getStatusText = (status) => {
   switch (status) {
@@ -131,7 +135,22 @@ const getStatusText = (status) => {
     case 'sent': return '已发送';
     case 'pending': return '待处理';
     case 'requested': return '等待接受';
+    case 'accepting': return '处理中...';
+    case 'rejecting': return '处理中...';
     default: return '未知状态';
+  }
+};
+
+// 返回标签类型，用于el-tag的type属性
+const getTagType = (status) => {
+  switch (status) {
+    case 'accepted': return 'success';
+    case 'rejected': 
+    case 'deleted': return 'danger';
+    case 'sent': return 'info';
+    case 'accepting': return 'warning';
+    case 'rejecting': return 'info';
+    default: return 'info';
   }
 };
 
@@ -215,6 +234,13 @@ const getContent = (notification) => {
 const handleAccept = async (notification) => {
   if (props.type === 'friend') {
     try {
+      // 乐观更新：立即更新UI状态
+      const originalStatus = notification.displayStatus;
+      const originalStatusBackup = notification.status;
+      
+      notification.displayStatus = 'accepting';  // 临时状态：处理中
+      notification.status = 'accepting';
+      
       // 获取发送者ID和接收者ID
       const currentUserId = getCurrentUserId();
       // 确保是整数类型，使用parseInt进行转换
@@ -222,42 +248,129 @@ const handleAccept = async (notification) => {
       const receiverId = parseInt(currentUserId, 10);
       
       if (isNaN(senderId) || isNaN(receiverId)) {
+        // 恢复原状态
+        notification.displayStatus = originalStatus;
+        notification.status = originalStatusBackup;
         ElMessage.error('无效的用户ID格式');
         return;
       }
       
       console.log('接受好友请求参数:', { senderId, receiverId });
       
+      // 乐观更新：立即添加到好友列表
+      const newFriend = {
+        friendId: senderId.toString(),
+        friendName: notification.firstUsername,
+        isOnline: false, // 默认离线，后续WebSocket会更新
+        tempAccepted: true // 标记为临时接受状态
+      };
+      
+      // 添加到WebSocket实例的好友列表
+      if (window.stompClientInstance && window.stompClientInstance.friends) {
+        window.stompClientInstance.friends.value = window.stompClientInstance.friends.value || [];
+        window.stompClientInstance.friends.value.unshift(newFriend);
+      }
+      
       // 使用friendApi中的方法接受好友请求
       const result = await acceptFriendRequest(senderId, receiverId);
       
       if (result) {
-        ElMessage.success('已接受好友请求');
+        // 成功：确认更新状态
         notification.status = 'accepted';
         notification.displayStatus = 'accepted';
+        ElMessage.success('已接受好友请求');
+        
+        // 确认好友关系已建立，移除临时标记
+        if (window.stompClientInstance && window.stompClientInstance.friends.value) {
+          const friendIndex = window.stompClientInstance.friends.value.findIndex(f => 
+            f.friendId === senderId.toString() && f.tempAccepted
+          );
+          if (friendIndex !== -1) {
+            delete window.stompClientInstance.friends.value[friendIndex].tempAccepted;
+          }
+        }
+        
         // 触发接受事件
         emit('friend-request-accepted', notification);
+        
+        // 设置超时检查机制
+        setTimeout(() => {
+          // 检查是否收到WebSocket确认
+          if (window.stompClientInstance && window.stompClientInstance.friends.value) {
+            const confirmed = window.stompClientInstance.friends.value.some(f => 
+              f.friendId === senderId.toString() && !f.tempAccepted
+            );
+            
+            if (!confirmed) {
+              console.warn('好友关系可能未完全同步到服务器');
+              ElMessage.warning('好友关系同步中，请稍候刷新');
+            }
+          }
+        }, 8000);
+        
       } else {
+        // API返回失败：恢复原状态
+        notification.displayStatus = originalStatus;
+        notification.status = originalStatusBackup;
+        
+        // 移除乐观添加的好友
+        if (window.stompClientInstance && window.stompClientInstance.friends.value) {
+          window.stompClientInstance.friends.value = window.stompClientInstance.friends.value.filter(f => 
+            !(f.friendId === senderId.toString() && f.tempAccepted)
+          );
+        }
+        
         ElMessage.error('操作失败');
       }
     } catch (error) {
       console.error('接受好友请求失败:', error);
+      
+      // 错误：恢复原状态
+      notification.displayStatus = originalStatus;
+      notification.status = originalStatusBackup;
+      
+      // 移除乐观添加的好友
+      if (window.stompClientInstance && window.stompClientInstance.friends.value) {
+        window.stompClientInstance.friends.value = window.stompClientInstance.friends.value.filter(f => 
+          !(f.friendId === senderId.toString() && f.tempAccepted)
+        );
+      }
+      
       ElMessage.error(error.message || '接受请求时发生错误');
     }
   } else {
     // 处理群组邀请的接受
     try {
+      // 乐观更新群组邀请状态
+      const originalStatus = notification.status;
+      notification.status = 'accepting';
+      
       const result = await respondToGroupInvitation(notification.id, 'accept');
       if (result) {
-        ElMessage.success('已接受群组邀请');
         notification.status = 'accepted';
+        ElMessage.success('已接受群组邀请');
+        
+        // 乐观更新：立即添加到群组列表
+        const newGroup = {
+          groupId: notification.groupId,
+          groupName: notification.groupName,
+          tempJoined: true // 临时标记
+        };
+        
+        if (window.stompClientInstance && window.stompClientInstance.groups) {
+          window.stompClientInstance.groups.value = window.stompClientInstance.groups.value || [];
+          window.stompClientInstance.groups.value.unshift(newGroup);
+        }
+        
         // 触发群组邀请接受事件
         emit('group-invitation-accepted', notification);
       } else {
+        notification.status = originalStatus;
         ElMessage.error('接受群组邀请失败');
       }
     } catch (e) {
       console.error('接受群组邀请失败:', e);
+      notification.status = originalStatus;
       ElMessage.error('接受群组邀请失败');
     }
   }
@@ -266,6 +379,13 @@ const handleAccept = async (notification) => {
 const handleReject = async (notification) => {
   if (props.type === 'friend') {
     try {
+      // 乐观更新：立即更新UI状态
+      const originalStatus = notification.displayStatus;
+      const originalStatusBackup = notification.status;
+      
+      notification.displayStatus = 'rejecting';  // 临时状态：处理中
+      notification.status = 'rejecting';
+      
       // 获取发送者ID和接收者ID
       const currentUserId = getCurrentUserId();
       // 确保是整数类型，使用parseInt进行转换
@@ -273,6 +393,9 @@ const handleReject = async (notification) => {
       const receiverId = parseInt(currentUserId, 10);
       
       if (isNaN(senderId) || isNaN(receiverId)) {
+        // 恢复原状态
+        notification.displayStatus = originalStatus;
+        notification.status = originalStatusBackup;
         ElMessage.error('无效的用户ID格式');
         return;
       }
@@ -283,32 +406,47 @@ const handleReject = async (notification) => {
       const result = await rejectFriendRequest(senderId, receiverId);
       
       if (result) {
-        ElMessage.warning('已拒绝好友请求');
+        // 成功：确认更新状态
         notification.status = 'deleted';
         notification.displayStatus = 'rejected';
+        ElMessage.warning('已拒绝好友请求');
+        
         // 触发拒绝事件
         emit('friend-request-rejected', notification);
       } else {
+        // API返回失败：恢复原状态
+        notification.displayStatus = originalStatus;
+        notification.status = originalStatusBackup;
         ElMessage.error('操作失败');
       }
     } catch (error) {
       console.error('拒绝好友请求失败:', error);
+      
+      // 错误：恢复原状态
+      notification.displayStatus = originalStatus;
+      notification.status = originalStatusBackup;
       ElMessage.error(error.message || '拒绝请求时发生错误');
     }
   } else {
     // 处理群组邀请的拒绝
     try {
+      // 乐观更新群组邀请状态
+      const originalStatus = notification.status;
+      notification.status = 'rejecting';
+      
       const result = await respondToGroupInvitation(notification.id, 'reject');
       if (result) {
-        ElMessage.warning('已拒绝群组邀请');
         notification.status = 'rejected';
+        ElMessage.warning('已拒绝群组邀请');
         // 触发群组邀请拒绝事件
         emit('group-invitation-rejected', notification);
       } else {
+        notification.status = originalStatus;
         ElMessage.error('拒绝群组邀请失败');
       }
     } catch (e) {
       console.error('拒绝群组邀请失败:', e);
+      notification.status = originalStatus;
       ElMessage.error('拒绝群组邀请失败');
     }
   }
@@ -411,7 +549,7 @@ const handleCancel = async (notification) => {
 }
 
 .status-badge {
-  margin-top: 12px;
+  margin-top: 10px;
 }
 
 /* Timeline custom styles */
@@ -472,5 +610,32 @@ const handleCancel = async (notification) => {
   background-color: rgba(41, 128, 185, 0.15) !important;
   border: 1px solid var(--info-color) !important;
   color: var(--info-color) !important;
+}
+
+/* 新增：loading动画样式 */
+.is-loading {
+  animation: rotating 2s linear infinite;
+}
+
+@keyframes rotating {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 乐观更新状态样式 */
+.el-tag.el-tag--warning.el-tag--plain {
+  background-color: #fdf6ec;
+  border-color: #f5dab1;
+  color: #e6a23c;
+}
+
+.el-tag.el-tag--info.el-tag--plain {
+  background-color: #f4f4f5;
+  border-color: #d3d4d6;
+  color: #909399;
 }
 </style> 

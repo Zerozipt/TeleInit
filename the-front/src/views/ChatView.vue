@@ -113,6 +113,7 @@ import { getPrivateChatHistory, getGroupChatHistory } from '@/api/chatApi';
 import { inviteUserToGroup, getGroupDetail } from '@/api/groupApi';
 import { ElMessage } from 'element-plus';
 import { InfoFilled, ArrowRight, Close } from '@element-plus/icons-vue';
+import { getAuthToken } from '@/utils/auth';
 
 // Import child components
 import Sidebar from './components/chat/Sidebar.vue'; 
@@ -288,18 +289,9 @@ const availableFriends = computed(() => {
   });
 });
 
-// --- 获取JWT令牌 ---
+// 使用统一的认证工具获取JWT令牌
 const getJwtToken = () => {
-  try {
-    const authData = localStorage.getItem('authorize');
-    if (authData) {
-      const parsedAuth = JSON.parse(authData);
-      return parsedAuth?.token || null;
-    }
-  } catch (e) {
-    console.error("Error reading auth token from localStorage:", e);
-  }
-  return null;
+  return getAuthToken();
 };
 
 // --- WebSocket同步和初始化 ---

@@ -125,6 +125,7 @@ import {
   Bell
 } from '@element-plus/icons-vue';
 import { useRouter } from 'vue-router';
+import { getAuthData } from '@/utils/auth';
 
 const emit = defineEmits(['select-contact', 'show-notifications', 'show-add-friend', 'show-group-dialog']);
 
@@ -150,13 +151,10 @@ const getCurrentUserId = () => {
     return wsUserId;
   }
   
-  // 作为备用方案，如果WebSocket实例还没有准备好，从localStorage获取
+  // 作为备用方案，如果WebSocket实例还没有准备好，使用统一的认证工具
   try {
-    const authData = localStorage.getItem('authorize');
-    if (authData) {
-      const parsedAuth = JSON.parse(authData);
-      return parsedAuth?.id || '';
-    }
+    const authData = getAuthData();
+    return authData?.id || '';
   } catch (e) {
     console.error("Error parsing auth data:", e);
   }

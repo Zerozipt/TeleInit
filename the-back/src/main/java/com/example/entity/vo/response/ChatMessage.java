@@ -6,6 +6,7 @@ import lombok.Data;
 @Data
 public class ChatMessage {
     //消息字段是否可选取决于消息类型
+    private String id;         // 消息ID（数据库中的真实ID）
     private MessageType type;  // 消息类型(枚举)(群聊消息，私聊消息，系统消息)(可选)
     private String content;    // 消息内容
     private String sender;     // 发送者用户名

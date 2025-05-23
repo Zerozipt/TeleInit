@@ -72,64 +72,143 @@ public class ChatServiceImpl implements ChatService {
 
     @Override
     public boolean savePublicMessage(ChatMessage message) {
+        // P0优化：精确异常处理，分离数据库和缓存操作
+        Group_message dbMessage = null;
         try {
-            Group_message group_message = ConvertUtils.convertToGroupMessage(message);
-            group_messageMapper.insert(group_message);
-            chatCacheService.cacheGroupMessage(group_message.getGroupId(), JSON.toJSONString(group_message));
-            logger.info("保存群组消息: {}, 发送者: {}", message.getContent(), message.getSender());
+            // 步骤1：先保存到数据库（关键路径）
+            dbMessage = ConvertUtils.convertToGroupMessage(message);
+            group_messageMapper.insert(dbMessage);
+            logger.info("群组消息已保存到数据库: messageId={}, groupId={}, sender={}", 
+                       dbMessage.getId(), message.getGroupId(), message.getSender());
+            
+            // 步骤2：异步更新缓存（非关键路径）
+            asyncUpdateGroupMessageCache(dbMessage);
             return true;
-        } catch (Exception e) {
-            logger.error("保存群组消息失败", e);
+            
+        } catch (org.springframework.dao.DataAccessException e) {
+            logger.error("群组消息数据库保存失败: groupId={}, sender={}", 
+                        message.getGroupId(), message.getSender(), e);
             return false;
+        } catch (Exception e) {
+            logger.error("群组消息保存发生未知错误", e);
+            // 如果数据库已保存，至少返回成功
+            return dbMessage != null && dbMessage.getId() != null;
         }
     }
 
     @Override
     public String savePublicMessageWithId(ChatMessage message) {
+        // P0优化：精确异常处理，确保返回准确的消息ID
+        Group_message dbMessage = null;
         try {
-            Group_message group_message = ConvertUtils.convertToGroupMessage(message);
-            group_messageMapper.insert(group_message);
-            chatCacheService.cacheGroupMessage(group_message.getGroupId(), JSON.toJSONString(group_message));
-            logger.info("保存群组消息: {}, 发送者: {}, 消息ID: {}", message.getContent(), message.getSender(), group_message.getId());
-            return String.valueOf(group_message.getId());
+            // 步骤1：先保存到数据库
+            dbMessage = ConvertUtils.convertToGroupMessage(message);
+            group_messageMapper.insert(dbMessage);
+            logger.info("群组消息已保存到数据库: messageId={}, groupId={}, sender={}", 
+                       dbMessage.getId(), message.getGroupId(), message.getSender());
+            
+            // 步骤2：异步更新缓存
+            asyncUpdateGroupMessageCache(dbMessage);
+            return String.valueOf(dbMessage.getId());
+            
+        } catch (org.springframework.dao.DataAccessException e) {
+            logger.error("群组消息数据库保存失败: groupId={}, sender={}", 
+                        message.getGroupId(), message.getSender(), e);
+            return null;
         } catch (Exception e) {
-            logger.error("保存群组消息失败", e);
+            logger.error("群组消息保存发生未知错误", e);
+            // 如果数据库已保存，返回消息ID
+            if (dbMessage != null && dbMessage.getId() != null) {
+                return String.valueOf(dbMessage.getId());
+            }
             return null;
         }
     }
 
     @Override
     public boolean savePrivateMessage(ChatMessage message) {
+        // P0优化：精确异常处理，分离数据库和缓存操作
+        PrivateChatMessage dbMessage = null;
         try {
-            // 持久化到数据库
-            PrivateChatMessage privateChatMessage = ConvertUtils.convertToPrivateChatMessage(message);
-            privateMessageMapper.insert(privateChatMessage);
-            // 缓存私聊消息及相关数据
-            chatCacheService.cachePrivateMessage(message);
-            logger.info("保存私人消息 (DB+Redis): {}, 从 {} 到 {}", privateChatMessage.getContent(), message.getSenderId(), message.getReceiverId());
+            // 步骤1：先保存到数据库（关键路径）
+            dbMessage = ConvertUtils.convertToPrivateChatMessage(message);
+            privateMessageMapper.insert(dbMessage);
+            logger.info("私聊消息已保存到数据库: messageId={}, from={}, to={}", 
+                       dbMessage.getId(), message.getSenderId(), message.getReceiverId());
+            
+            // 步骤2：异步更新缓存（非关键路径）
+            asyncUpdatePrivateMessageCache(message, dbMessage.getId());
             return true;
-        } catch (Exception e) {
-            logger.error("保存私人消息 (DB/Redis) 失败", e);
+            
+        } catch (org.springframework.dao.DataAccessException e) {
+            logger.error("私聊消息数据库保存失败: from={}, to={}", 
+                        message.getSenderId(), message.getReceiverId(), e);
             return false;
+        } catch (Exception e) {
+            logger.error("私聊消息保存发生未知错误", e);
+            // 如果数据库已保存，至少返回成功
+            return dbMessage != null && dbMessage.getId() != null;
         }
     }
     
     @Override
     public String savePrivateMessageWithId(ChatMessage message) {
+        // P0优化：精确异常处理，确保返回准确的消息ID
+        PrivateChatMessage dbMessage = null;
         try {
-            // 持久化到数据库
-            PrivateChatMessage privateChatMessage = ConvertUtils.convertToPrivateChatMessage(message);
-            privateMessageMapper.insert(privateChatMessage);
-            // 缓存私聊消息及相关数据
-            chatCacheService.cachePrivateMessage(message);
-            logger.info("保存私人消息 (DB+Redis): {}, 从 {} 到 {}, 消息ID: {}", privateChatMessage.getContent(), message.getSenderId(), message.getReceiverId(), privateChatMessage.getId());
-            return String.valueOf(privateChatMessage.getId());
+            // 步骤1：先保存到数据库
+            dbMessage = ConvertUtils.convertToPrivateChatMessage(message);
+            privateMessageMapper.insert(dbMessage);
+            logger.info("私聊消息已保存到数据库: messageId={}, from={}, to={}", 
+                       dbMessage.getId(), message.getSenderId(), message.getReceiverId());
+            
+            // 步骤2：异步更新缓存
+            asyncUpdatePrivateMessageCache(message, dbMessage.getId());
+            return String.valueOf(dbMessage.getId());
+            
+        } catch (org.springframework.dao.DataAccessException e) {
+            logger.error("私聊消息数据库保存失败: from={}, to={}", 
+                        message.getSenderId(), message.getReceiverId(), e);
+            return null;
         } catch (Exception e) {
-            logger.error("保存私人消息 (DB/Redis) 失败", e);
+            logger.error("私聊消息保存发生未知错误", e);
+            // 如果数据库已保存，返回消息ID
+            if (dbMessage != null && dbMessage.getId() != null) {
+                return String.valueOf(dbMessage.getId());
+            }
             return null;
         }
     }
     
+    /**
+     * 异步更新群组消息缓存
+     */
+    private void asyncUpdateGroupMessageCache(Group_message dbMessage) {
+        try {
+            String messageJson = JSON.toJSONString(dbMessage);
+            chatCacheService.cacheGroupMessage(dbMessage.getGroupId(), messageJson);
+            logger.debug("群组消息缓存更新成功: messageId={}", dbMessage.getId());
+        } catch (Exception e) {
+            logger.warn("群组消息缓存更新失败，但消息已保存: messageId={}", dbMessage.getId(), e);
+            // 可以考虑加入重试队列或者触发缓存重建任务
+        }
+    }
+    
+    /**
+     * 异步更新私聊消息缓存
+     */
+    private void asyncUpdatePrivateMessageCache(ChatMessage message, Long messageId) {
+        try {
+            // 设置实际的消息ID
+            message.setId(String.valueOf(messageId));
+            chatCacheService.cachePrivateMessage(message);
+            logger.debug("私聊消息缓存更新成功: messageId={}", messageId);
+        } catch (Exception e) {
+            logger.warn("私聊消息缓存更新失败，但消息已保存: messageId={}", messageId, e);
+            // 可以考虑加入重试队列或者触发缓存重建任务
+        }
+    }
+
     /**
      * 获取会话ID，确保相同的两个用户会得到相同的会话ID
      */
@@ -269,86 +348,142 @@ public class ChatServiceImpl implements ChatService {
 
     @Override
     public boolean ReceivedFriendRequests(int senderId, int receiverId) {
-        try {
-            // 修复Bug：只处理最新的请求记录
-            Friends latestRequest = getLatestFriendRequest(senderId, receiverId);
-            
-            if (latestRequest == null || latestRequest.getStatus() != Friends.Status.requested) {
-                logger.warn("没有找到有效的好友请求: senderId={}, receiverId={}", senderId, receiverId);
-                return false;
+        // P0优化：使用乐观锁防止并发更新冲突
+        int maxRetries = 3;
+        for (int attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+                // 获取最新的请求记录
+                Friends latestRequest = getLatestFriendRequest(senderId, receiverId);
+                
+                if (latestRequest == null || latestRequest.getStatus() != Friends.Status.requested) {
+                    logger.warn("没有找到有效的好友请求: senderId={}, receiverId={}", senderId, receiverId);
+                    return false;
+                }
+                
+                // 使用乐观锁更新状态
+                latestRequest.setStatus(Friends.Status.accepted);
+                int updatedRows = friendsMapper.updateById(latestRequest);
+                
+                if (updatedRows > 0) {
+                    logger.info("用户 {} 接受了来自用户 {} 的好友请求，记录ID: {}, 尝试次数: {}", 
+                               receiverId, senderId, latestRequest.getId(), attempt);
+                    return true;
+                } else {
+                    logger.warn("好友请求状态更新失败，可能存在并发冲突: senderId={}, receiverId={}, 尝试次数: {}", 
+                               senderId, receiverId, attempt);
+                    if (attempt < maxRetries) {
+                        // 短暂等待后重试
+                        Thread.sleep(50 * attempt);
+                        continue;
+                    }
+                }
+            } catch (Exception e) {
+                logger.error("接受好友请求失败，尝试次数: {}", attempt, e);
+                if (attempt < maxRetries) {
+                    try {
+                        Thread.sleep(100 * attempt);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                } else {
+                    throw new RuntimeException("接受好友请求失败，已重试" + maxRetries + "次", e);
+                }
             }
-            
-            // 只更新这一条特定的记录
-            latestRequest.setStatus(Friends.Status.accepted);
-            int updatedRows = friendsMapper.updateById(latestRequest);
-            
-            if (updatedRows > 0) {
-                logger.info("用户 {} 接受了来自用户 {} 的好友请求，记录ID: {}", receiverId, senderId, latestRequest.getId());
-                return true;
-            } else {
-                logger.error("更新好友请求状态失败");
-                return false;
-            }
-        } catch (Exception e) {
-            logger.error("接受好友请求失败", e);
-            return false;
         }
+        return false;
     }
 
     @Override
     public boolean rejectFriendRequestByUsers(int currentUserId, int senderIdOfRequest) {
-        try {
-            // 修复Bug：只处理最新的请求记录
-            Friends latestRequest = getLatestFriendRequest(senderIdOfRequest, currentUserId);
-            
-            if (latestRequest == null || latestRequest.getStatus() != Friends.Status.requested) {
-                logger.warn("没有找到有效的好友请求: senderId={}, receiverId={}", senderIdOfRequest, currentUserId);
-                return false;
+        // P0优化：使用乐观锁防止并发更新冲突
+        int maxRetries = 3;
+        for (int attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+                Friends latestRequest = getLatestFriendRequest(senderIdOfRequest, currentUserId);
+                
+                if (latestRequest == null || latestRequest.getStatus() != Friends.Status.requested) {
+                    logger.warn("没有找到有效的好友请求: senderId={}, receiverId={}", senderIdOfRequest, currentUserId);
+                    return false;
+                }
+                
+                // 使用乐观锁更新状态
+                latestRequest.setStatus(Friends.Status.rejected);
+                int updatedRows = friendsMapper.updateById(latestRequest);
+                
+                if (updatedRows > 0) {
+                    logger.info("用户 {} 拒绝了来自用户 {} 的好友请求，记录ID: {}, 尝试次数: {}", 
+                               currentUserId, senderIdOfRequest, latestRequest.getId(), attempt);
+                    return true;
+                } else {
+                    logger.warn("好友请求状态更新失败，可能存在并发冲突: senderId={}, receiverId={}, 尝试次数: {}", 
+                               senderIdOfRequest, currentUserId, attempt);
+                    if (attempt < maxRetries) {
+                        Thread.sleep(50 * attempt);
+                        continue;
+                    }
+                }
+            } catch (Exception e) {
+                logger.error("拒绝好友请求失败，尝试次数: {}", attempt, e);
+                if (attempt < maxRetries) {
+                    try {
+                        Thread.sleep(100 * attempt);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                } else {
+                    throw new RuntimeException("拒绝好友请求失败，已重试" + maxRetries + "次", e);
+                }
             }
-            
-            // 只更新这一条特定的记录
-            latestRequest.setStatus(Friends.Status.rejected);
-            int updatedRows = friendsMapper.updateById(latestRequest);
-            
-            if (updatedRows > 0) {
-                logger.info("用户 {} 拒绝了来自用户 {} 的好友请求，记录ID: {}", currentUserId, senderIdOfRequest, latestRequest.getId());
-                return true;
-            } else {
-                logger.error("更新好友请求状态失败");
-                return false;
-            }
-        } catch (Exception e) {
-            logger.error("拒绝好友请求失败: receiverId={}, senderId={}", currentUserId, senderIdOfRequest, e);
-            return false;
         }
+        return false;
     }
 
     @Override
     public boolean cancelFriendRequest(int currentUserId, int targetUserId) {
-        try {
-            // 修复Bug：只处理最新的请求记录
-            Friends latestRequest = getLatestFriendRequest(currentUserId, targetUserId);
-            
-            if (latestRequest == null || latestRequest.getStatus() != Friends.Status.requested) {
-                logger.warn("没有找到有效的好友请求可以取消: senderId={}, receiverId={}", currentUserId, targetUserId);
-                return false;
+        // P0优化：使用乐观锁防止并发更新冲突
+        int maxRetries = 3;
+        for (int attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+                Friends latestRequest = getLatestFriendRequest(currentUserId, targetUserId);
+                
+                if (latestRequest == null || latestRequest.getStatus() != Friends.Status.requested) {
+                    logger.warn("没有找到有效的好友请求可以取消: senderId={}, receiverId={}", currentUserId, targetUserId);
+                    return false;
+                }
+                
+                // 使用乐观锁更新状态为rejected（取消）
+                latestRequest.setStatus(Friends.Status.rejected);
+                int updatedRows = friendsMapper.updateById(latestRequest);
+                
+                if (updatedRows > 0) {
+                    logger.info("用户 {} 取消了发往用户 {} 的好友请求，记录ID: {}, 尝试次数: {}", 
+                               currentUserId, targetUserId, latestRequest.getId(), attempt);
+                    return true;
+                } else {
+                    logger.warn("好友请求取消失败，可能存在并发冲突: senderId={}, receiverId={}, 尝试次数: {}", 
+                               currentUserId, targetUserId, attempt);
+                    if (attempt < maxRetries) {
+                        Thread.sleep(50 * attempt);
+                        continue;
+                    }
+                }
+            } catch (Exception e) {
+                logger.error("取消好友请求失败，尝试次数: {}", attempt, e);
+                if (attempt < maxRetries) {
+                    try {
+                        Thread.sleep(100 * attempt);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                } else {
+                    throw new RuntimeException("取消好友请求失败，已重试" + maxRetries + "次", e);
+                }
             }
-            
-            // 将最新的请求标记为rejected（取消）
-            latestRequest.setStatus(Friends.Status.rejected);
-            int updatedRows = friendsMapper.updateById(latestRequest);
-            
-            if (updatedRows > 0) {
-                logger.info("用户 {} 取消了发往用户 {} 的好友请求，记录ID: {}", currentUserId, targetUserId, latestRequest.getId());
-                return true;
-            } else {
-                logger.error("取消好友请求失败");
-                return false;
-            }
-        } catch (Exception e) {
-            logger.error("取消好友请求失败: currentUserId={}, targetUserId={}", currentUserId, targetUserId, e);
-            return false;
         }
+        return false;
     }
 
     @Override

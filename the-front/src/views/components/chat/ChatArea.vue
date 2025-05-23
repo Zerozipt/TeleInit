@@ -171,6 +171,7 @@ import data from 'emoji-mart-vue-fast/data/all.json';
 import { Picker, EmojiIndex } from 'emoji-mart-vue-fast/src';
 import 'emoji-mart-vue-fast/css/emoji-mart.css';
 import { uploadFile } from '@/api/fileApi';
+import { getAuthToken } from '@/utils/auth';
 
 const props = defineProps({
   contact: Object, 
@@ -431,17 +432,10 @@ const handleFileDownload = (message) => {
   console.log('[ChatArea] 开始下载文件:', message.fileName, '，URL:', message.fileUrl);
   
   // 获取认证token以处理可能需要认证的下载
+  const token = getAuthToken();
   let authHeader = '';
-  try {
-    const authData = localStorage.getItem('authorize');
-    if (authData) {
-      const parsedAuth = JSON.parse(authData);
-      if (parsedAuth?.token) {
-        authHeader = `Bearer ${parsedAuth.token}`;
-      }
-    }
-  } catch (err) {
-    console.error('[ChatArea] 获取认证信息失败:', err);
+  if (token) {
+    authHeader = `Bearer ${token}`;
   }
   
   // 使用fetch API进行下载，确保设置正确的请求头

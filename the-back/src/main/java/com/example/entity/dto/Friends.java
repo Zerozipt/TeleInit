@@ -3,6 +3,7 @@ package com.example.entity.dto;
 import lombok.Data;
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.baomidou.mybatisplus.annotation.TableField;
+import com.baomidou.mybatisplus.annotation.Version;
 import java.util.Date;
 import java.sql.Timestamp;
 
@@ -18,6 +19,11 @@ public class Friends {
     private Status status;
     @TableField("created_at")
     private Timestamp createdAt;
+    
+    // 新增：乐观锁版本字段
+    @Version
+    @TableField("version")
+    private Integer version;
 
     public enum Status {
         requested,

@@ -1,18 +1,10 @@
 import axios from 'axios';
 import { ElMessage } from 'element-plus';
+import { getAuthToken } from '@/utils/auth';
 
-// 获取存储在 localStorage 中的 JWT Token
-const getAuthToken = () => {
-    try {
-        const authData = localStorage.getItem('authorize');
-        if (authData) {
-            const parsedAuth = JSON.parse(authData);
-            return parsedAuth?.token || null;
-        }
-    } catch (e) {
-        console.error("Error reading auth token from localStorage:", e);
-    }
-    return null;
+// 使用统一的认证工具获取JWT Token
+const getAuthTokenFromStorage = () => {
+    return getAuthToken();
 };
 
 // 创建 Axios 实例
@@ -24,7 +16,7 @@ const apiClient = axios.create({
 // 添加请求拦截器，自动附加 Authorization Header
 apiClient.interceptors.request.use(
     (config) => {
-        const token = getAuthToken();
+        const token = getAuthTokenFromStorage();
         if (token) {
             config.headers.Authorization = `Bearer ${token}`;
         }

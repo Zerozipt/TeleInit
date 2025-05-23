@@ -2,6 +2,7 @@
 import { ref, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { logout, isUnauthorized } from '@/net'
+import { getAuthData } from '@/utils/auth'
 
 const router = useRouter()
 const unauthorized = ref(true)
@@ -14,8 +15,8 @@ onMounted(() => {
 function checkLoginStatus() {
   unauthorized.value = isUnauthorized()
   if (!unauthorized.value) {
-    const token = JSON.parse(localStorage.getItem('authorize') || sessionStorage.getItem('authorize'))
-    username.value = token?.username || '用户'
+    const authData = getAuthData()
+    username.value = authData?.username || '用户'
   }
 }
 

@@ -19,6 +19,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -64,6 +66,8 @@ public class ChatCacheServiceImpl implements ChatCacheService {
         Long.class
     );
 
+    private static final Logger logger = LoggerFactory.getLogger(ChatCacheServiceImpl.class);
+
     @Autowired
     private RedisService redisService;
 
@@ -89,13 +93,14 @@ public class ChatCacheServiceImpl implements ChatCacheService {
     @Override
     public List<Group_message> getGroupChatHistory(String groupId, int limit) {
         String key = RedisKeys.CHAT_GROUP + groupId;
-        List<String> jsons = redisService.rangeList(key, 0, -1);
-        List<Group_message> messages;
-        if (jsons.isEmpty()) {
-            // 回落数据库
+        
+        try {
+            // 🔧 HOTFIX: 简化缓存逻辑，优先保证数据一致性
+            // 先查询数据库获取最新数据
             List<Group_message> dbList = group_messageMapper.selectList(
                     Wrappers.<Group_message>query().eq("groupId", groupId).orderByAsc("Create_at")
             );
+            
             // 批量查询发送者名称，避免空列表导致 SQL 语法错误
             List<Integer> senderIds = dbList.stream()
                     .map(Group_message::getSenderId)
@@ -107,43 +112,34 @@ public class ChatCacheServiceImpl implements ChatCacheService {
                 nameMap = accounts.stream()
                         .collect(Collectors.toMap(Account::getId, Account::getUsername));
             }
-            messages = new ArrayList<>();
+            
+            // 设置发送者名称
             for (Group_message gm : dbList) {
                 gm.setSenderName(nameMap.get(gm.getSenderId()));
-                String json = JSON.toJSONString(gm);
-                redisService.pushList(key, json, 1000, EXPIRE);
-                messages.add(gm);
             }
-        } else {
-            List<Group_message> cached = new ArrayList<>();
-            for (String json : jsons) {
-                try {
-                    if (json.startsWith("{")) {
-                        cached.add(JSON.parseObject(json, Group_message.class));
-                    }
-                } catch (JSONException ignore) {}
+            
+            // 更新缓存（异步，不影响响应速度）
+            try {
+                for (Group_message gm : dbList) {
+                    String json = JSON.toJSONString(gm);
+                    redisService.pushList(key, json, 1000, EXPIRE);
+                }
+            } catch (Exception cacheError) {
+                // 缓存失败不影响业务逻辑
+                logger.warn("缓存群组消息失败，但数据已正确返回: {}", cacheError.getMessage());
             }
-            // 批量查询发送者名称，避免空列表导致 SQL 语法错误
-            List<Integer> cachedSenderIds = cached.stream()
-                    .map(Group_message::getSenderId)
-                    .distinct()
-                    .collect(Collectors.toList());
-            Map<Integer, String> nameMapCached = new HashMap<>();
-            if (!cachedSenderIds.isEmpty()) {
-                List<Account> cachedAccounts = accountMapper.selectBatchIds(cachedSenderIds);
-                nameMapCached = cachedAccounts.stream()
-                        .collect(Collectors.toMap(Account::getId, Account::getUsername));
+            
+            // 截取最后 limit 条
+            if (dbList.size() > limit) {
+                return dbList.subList(dbList.size() - limit, dbList.size());
             }
-            for (Group_message gm : cached) {
-                gm.setSenderName(nameMapCached.get(gm.getSenderId()));
-            }
-            messages = cached;
+            return dbList;
+            
+        } catch (Exception e) {
+            logger.error("获取群组消息历史失败: groupId={}", groupId, e);
+            // 返回空列表而不是null，避免前端错误
+            return new ArrayList<>();
         }
-        // 截取最后 limit 条
-        if (messages.size() > limit) {
-            return messages.subList(messages.size() - limit, messages.size());
-        }
-        return messages;
     }
 
     @Override

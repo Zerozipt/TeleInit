@@ -220,35 +220,60 @@ public class GroupController {
             @PathVariable String groupId,
             @RequestHeader(value = "Authorization", required = false) String authorization) {
         try {
+            log.debug("开始获取群组详情: groupId={}", groupId);
+            
             String jwt = null;
             if (authorization != null && authorization.startsWith("Bearer ")) {
                 jwt = authorization.substring(7);
             }
             
             if (jwt == null) {
+                log.warn("获取群组详情失败: 未提供JWT令牌, groupId={}", groupId);
                 return RestBean.unauthorized("未提供JWT令牌,请重新登陆");
             }
             
             // 解析JWT获取用户ID
             DecodedJWT decodedJWT = jwtUtils.resolveJWTFromLocalStorage(jwt);
             int userId = Integer.parseInt(decodedJWT.getClaim("id").asString());
+            log.debug("用户ID: {}, 请求群组ID: {}", userId, groupId);
             
-            // 验证用户是否为群组成员
-            if (!groupService.isGroupMember(groupId, userId)) {
+            // 🔧 HOTFIX: 增强群组成员验证的错误处理
+            boolean isMember;
+            try {
+                isMember = groupService.isGroupMember(groupId, userId);
+                log.debug("群组成员检查结果: userId={}, groupId={}, isMember={}", userId, groupId, isMember);
+            } catch (Exception e) {
+                log.error("检查群组成员关系时发生错误: userId={}, groupId={}", userId, groupId, e);
+                return RestBean.failure(500, "检查群组成员关系失败: " + e.getMessage());
+            }
+            
+            if (!isMember) {
+                log.warn("非群组成员尝试访问群组详情: userId={}, groupId={}", userId, groupId);
                 return RestBean.failure(403, "只有群组成员才能查看群组详情");
             }
             
             // 获取群组详情
-            GroupDetailResponse groupDetail = groupService.getGroupDetail(groupId);
+            GroupDetailResponse groupDetail;
+            try {
+                groupDetail = groupService.getGroupDetail(groupId);
+                log.debug("群组详情查询结果: groupId={}, detail={}", groupId, 
+                         groupDetail != null ? "found" : "null");
+            } catch (Exception e) {
+                log.error("获取群组详情时发生错误: groupId={}", groupId, e);
+                return RestBean.failure(500, "获取群组详情失败: " + e.getMessage());
+            }
             
             if (groupDetail == null) {
+                log.warn("群组不存在: groupId={}", groupId);
                 return RestBean.failure(404, "群组不存在");
             }
             
+            log.info("成功获取群组详情: groupId={}, memberCount={}", groupId, 
+                    groupDetail.getMemberCount());
             return RestBean.success(groupDetail);
             
         } catch (Exception e) {
-            log.error("获取群组详情失败: {}", e.getMessage(), e);
+            log.error("获取群组详情发生未预期错误: groupId={}", groupId, e);
             return RestBean.failure(500, "获取群组详情失败: " + e.getMessage());
         }
     }

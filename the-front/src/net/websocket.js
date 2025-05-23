@@ -4,6 +4,7 @@ import { Stomp } from '@stomp/stompjs';
 import { ref, shallowRef } from 'vue'; // 使用 shallowRef 优化 StompClient 实例
 import axios from 'axios'; // 导入axios用于HTTP请求
 import { getReceivedGroupInvitations } from '@/api/groupApi'; // 导入群组API
+import { getAuthToken } from '@/utils/auth';
 
 const SOCKET_URL = 'http://localhost:8080/ws-chat'; // 后端 WebSocket 端点
 
@@ -122,18 +123,11 @@ class StompClientWrapper {
 
         return new Promise((resolve, reject) => {
             try {
-                const authData = localStorage.getItem('authorize');
-                if (!authData) {
-                    console.error('[WebSocket] refreshGroups: No authData in localStorage.');
-                    return reject(new Error('用户未登录'));
-                }
-                
-                const parsedAuth = JSON.parse(authData);
-                const jwt = parsedAuth?.token;
-                
+                // 使用统一的认证工具获取JWT
+                const jwt = getAuthToken();
                 if (!jwt) {
-                    console.error('[WebSocket] refreshGroups: No JWT token found in parsedAuth.');
-                    return reject(new Error('无效的认证信息'));
+                    console.error('[WebSocket] refreshGroups: No JWT token found.');
+                    return reject(new Error('用户未登录'));
                 }
                 
                 console.log('[WebSocket] refreshGroups: Calling backend /api/groups/getGroupMembers...');
@@ -1041,17 +1035,10 @@ class StompClientWrapper {
         console.log('[StompClientWrapper] 开始刷新好友列表，当前用户ID:', this.currentUserId.value);
         return new Promise((resolve, reject) => {
             try {
-                // 获取JWT令牌
-                const authData = localStorage.getItem('authorize');
-                if (!authData) {
-                    return reject(new Error('用户未登录'));
-                }
-                
-                const parsedAuth = JSON.parse(authData);
-                const jwt = parsedAuth?.token;
-                
+                // 使用统一的认证工具获取JWT令牌
+                const jwt = getAuthToken();
                 if (!jwt) {
-                    return reject(new Error('无效的认证信息'));
+                    return reject(new Error('用户未登录'));
                 }
                 
                 // 调用后端API获取最新的好友列表
@@ -1098,17 +1085,10 @@ class StompClientWrapper {
 
         return new Promise((resolve, reject) => {
             try {
-                // 获取JWT令牌
-                const authData = localStorage.getItem('authorize');
-                if (!authData) {
-                    return reject(new Error('用户未登录'));
-                }
-                
-                const parsedAuth = JSON.parse(authData);
-                const jwt = parsedAuth?.token;
-                
+                // 使用统一的认证工具获取JWT令牌
+                const jwt = getAuthToken();
                 if (!jwt) {
-                    return reject(new Error('无效的认证信息'));
+                    return reject(new Error('用户未登录'));
                 }
                 
                 // 调用后端API获取最新的好友请求列表

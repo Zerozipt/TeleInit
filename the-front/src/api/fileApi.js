@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { getAuthToken } from '@/utils/auth';
 
 // 上传文件到后端并返回文件信息
 export async function uploadFile(file) {
@@ -6,13 +7,8 @@ export async function uploadFile(file) {
   const formData = new FormData();
   formData.append('file', file);
   try {
-    // 从 localStorage 获取 token
-    const authData = localStorage.getItem('authorize');
-    let token = null;
-    if (authData) {
-      const parsedAuth = JSON.parse(authData);
-      token = parsedAuth?.token;
-    }
+    // 使用统一的认证工具获取token
+    const token = getAuthToken();
 
     const response = await axios.post(
       '/api/files/upload',

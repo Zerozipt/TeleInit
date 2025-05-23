@@ -4,12 +4,14 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.example.entity.dto.Account;
 import com.example.entity.dto.Group;
 import com.example.entity.dto.Group_member;
+import com.example.entity.dto.OutboxEvent;
 import com.example.entity.vo.response.GroupDetailResponse;
 import com.example.entity.vo.response.GroupMemberResponse;
 import com.example.mapper.AccountMapper;
 import com.example.mapper.GroupMapper;
 import com.example.mapper.Group_memberMapper;
 import com.example.service.GroupService;
+import com.example.service.OutboxEventService;
 import com.example.utils.Const;
 import com.example.utils.RedisKeys;
 import jakarta.annotation.Resource;
@@ -25,6 +27,9 @@ import java.util.List;
 import java.util.ArrayList;
 import java.util.stream.Collectors;
 import com.example.service.GroupCacheService;
+import org.springframework.dao.DuplicateKeyException;
+import com.alibaba.fastjson2.JSON;
+import java.util.Map;
 
 
 @Service
@@ -40,6 +45,9 @@ public class GroupServiceImpl implements GroupService {
     private RedisService redisService;
     @Autowired
     private GroupCacheService groupCacheService;
+    @Autowired
+    private OutboxEventService outboxEventService;
+    
     private static final Logger logger = LoggerFactory.getLogger(GroupServiceImpl.class);
 
 
@@ -52,44 +60,56 @@ public class GroupServiceImpl implements GroupService {
         if (creatorId <= 0) {
             throw new IllegalArgumentException("创建者ID不能为空");
         }
-        // --- 开始检查名称唯一性 ---
-        QueryWrapper<Group> checkNameWrapper = new QueryWrapper<>();
-        checkNameWrapper.eq("name", groupName); // 假设数据库列名为 'name'
-        if (groupMapper.exists(checkNameWrapper)) {
-            // 如果名称已存在，抛出异常，阻止创建
-            throw new IllegalArgumentException("创建失败：群聊名称 '" + groupName + "' 已被使用");
+        
+        try {
+            // P0优化：直接创建，让数据库唯一约束处理重复名称
+            Group newGroup = new Group();
+            newGroup.setGroupId(UUID.randomUUID().toString());
+            newGroup.setName(groupName);
+            newGroup.setCreatorId(creatorId);
+            newGroup.setCreate_at(new Date());
+
+            int groupInserted = groupMapper.insert(newGroup);
+            if (groupInserted <= 0) {
+                throw new RuntimeException("创建群聊失败");
+            }
+
+            // 将创建者添加为群成员
+            Group_member creatorMember = new Group_member();
+            creatorMember.setGroupId(newGroup.getGroupId());
+            creatorMember.setUserId(creatorId);
+            creatorMember.setJoinedAt(new Date());
+            creatorMember.setRole("CREATOR");
+            creatorMember.setGroupName(groupName);
+            
+            int memberInserted = groupMemberMapper.insert(creatorMember);
+            if (memberInserted <= 0) {
+                throw new RuntimeException("将创建者添加到群成员失败");
+            }
+            
+            // P1优化：使用本地消息表处理缓存失效，确保最终一致性
+            String eventPayload = JSON.toJSONString(Map.of(
+                "groupId", newGroup.getGroupId(),
+                "userId", creatorId,
+                "action", "GROUP_CREATED"
+            ));
+            outboxEventService.createEvent(
+                OutboxEvent.EventTypes.GROUP_CREATED, 
+                newGroup.getGroupId(), 
+                eventPayload
+            );
+
+            logger.info("群组创建成功: groupId={}, name={}, creatorId={}", 
+                       newGroup.getGroupId(), groupName, creatorId);
+            return newGroup;
+            
+        } catch (DuplicateKeyException e) {
+            logger.warn("群聊名称已存在: {}", groupName);
+            throw new IllegalArgumentException("群聊名称 '" + groupName + "' 已被使用，请选择其他名称");
+        } catch (Exception e) {
+            logger.error("创建群组失败: groupName={}, creatorId={}", groupName, creatorId, e);
+            throw e;
         }
-        // --- 结束检查名称唯一性 ---
-
-        // 1. 创建群组基本信息
-        Group newGroup = new Group();
-        newGroup.setGroupId(UUID.randomUUID().toString()); // 生成唯一群组ID
-        newGroup.setName(groupName);
-        newGroup.setCreatorId(creatorId);
-        newGroup.setCreate_at(new Date()); // 设置创建时间
-
-        int groupInserted = groupMapper.insert(newGroup);
-        if (groupInserted <= 0) {
-            throw new RuntimeException("创建群聊失败");
-        }
-
-        // 2. 将创建者添加为群成员 (通常是管理员或群主)
-        Group_member creatorMember = new Group_member();
-        creatorMember.setGroupId(newGroup.getGroupId());
-        creatorMember.setUserId(creatorId);
-        creatorMember.setJoinedAt(new Date()); // 格式化加入时间
-        creatorMember.setRole("CREATOR"); // 或者 "ADMIN", "OWNER" 等
-        creatorMember.setGroupName(groupName);
-        int memberInserted = groupMemberMapper.insert(creatorMember);
-        groupCacheService.invalidateUserGroups(creatorId);
-        groupCacheService.invalidateGroupDetail(newGroup.getGroupId());
-        if (memberInserted <= 0) {
-            // 如果添加成员失败，需要回滚群组创建操作 (通过 @Transactional 实现)
-            throw new RuntimeException("将创建者添加到群成员失败");
-        }
-
-        // 返回创建成功的群组信息
-        return newGroup;
     }
 
     @Override
@@ -102,40 +122,53 @@ public class GroupServiceImpl implements GroupService {
             throw new IllegalArgumentException("用户ID不能为空");
         }
         
-        // 根据群组 ID 获取群组信息
-        Group group = groupMapper.selectById(groupId);
-        if (group == null) {
-            throw new RuntimeException("加入失败：群聊不存在 (ID: " + groupId + ")");
-        }
-        
-        // 检查用户是否已在群组中
-        QueryWrapper<Group_member> memberCheck = new QueryWrapper<>();
-        memberCheck.eq("group_id", groupId).eq("user_id", userId).last("LIMIT 1");
-        if (groupMemberMapper.exists(memberCheck)) {
-            throw new RuntimeException("用户已在该群聊中");
-        }
-        
-        // 添加新成员
-        Group_member newMember = new Group_member();
-        newMember.setGroupId(groupId);
-        newMember.setUserId(userId);
-        newMember.setJoinedAt(new Date());
-        newMember.setRole("MEMBER");
-        newMember.setGroupName(group.getName());
+        try {
+            // 根据群组 ID 获取群组信息
+            Group group = groupMapper.selectById(groupId);
+            if (group == null) {
+                throw new RuntimeException("加入失败：群聊不存在 (ID: " + groupId + ")");
+            }
+            
+            // P0优化：直接插入，让数据库唯一约束处理重复加入
+            Group_member newMember = new Group_member();
+            newMember.setGroupId(groupId);
+            newMember.setUserId(userId);
+            newMember.setJoinedAt(new Date());
+            newMember.setRole("MEMBER");
+            newMember.setGroupName(group.getName());
 
-        int result = groupMemberMapper.insert(newMember);
-        groupCacheService.invalidateUserGroups(userId);
-        groupCacheService.invalidateGroupDetail(groupId);
-        if (result <= 0) {
-            throw new RuntimeException("加入群聊数据库操作失败");
+            int result = groupMemberMapper.insert(newMember);
+            if (result <= 0) {
+                throw new RuntimeException("加入群聊数据库操作失败");
+            }
+            
+            // P1优化：使用本地消息表处理缓存失效
+            String eventPayload = JSON.toJSONString(Map.of(
+                "groupId", groupId,
+                "userId", userId,
+                "action", "GROUP_MEMBER_ADDED"
+            ));
+            outboxEventService.createEvent(
+                OutboxEvent.EventTypes.GROUP_MEMBER_ADDED, 
+                groupId + ":" + userId, 
+                eventPayload
+            );
+            
+            logger.info("用户加入群组成功: groupId={}, userId={}", groupId, userId);
+            return newMember;
+            
+        } catch (DuplicateKeyException e) {
+            logger.warn("用户已在该群聊中: groupId={}, userId={}", groupId, userId);
+            throw new RuntimeException("用户已在该群聊中");
+        } catch (Exception e) {
+            logger.error("加入群组失败: groupId={}, userId={}", groupId, userId, e);
+            throw e;
         }
-        return newMember;
     }
 
     @Override
     @Transactional
     public Group_member joinGroup(String groupId, int userId) {
-        // 使用 joinGroupById 方法实现通过 ID 加入群聊
         return joinGroupById(groupId, userId);
     }
 
@@ -159,7 +192,6 @@ public class GroupServiceImpl implements GroupService {
 
     @Override
     public List<Group> getGroupByName(String groupName) {
-        //从mysql中获取groupName对应的group,使用相似查询
         QueryWrapper<Group> queryWrapper = new QueryWrapper<>();
         queryWrapper.like("name", "%" + groupName + "%");
         return groupMapper.selectList(queryWrapper);
@@ -167,13 +199,11 @@ public class GroupServiceImpl implements GroupService {
 
     @Override
     public List<Group_member> getGroupMembers(int userId) {
-        // FIRST_EDIT 委托缓存服务获取用户群组列表
         return groupCacheService.getUserGroups(userId);
     }
 
     @Override
     public GroupDetailResponse getGroupDetail(String groupId) {
-        // FIRST_EDIT 委托缓存服务获取群组详情
         return groupCacheService.getGroupDetail(groupId);
     }
     
@@ -193,16 +223,25 @@ public class GroupServiceImpl implements GroupService {
     @Transactional
     public boolean leaveGroup(String groupId, int userId) {
         try {
-            // 从群组成员中删除
             int deleted = groupMemberMapper.delete(
                 new QueryWrapper<Group_member>()
                     .eq("group_id", groupId)
                     .eq("user_id", userId)
             );
-            // FIRST_EDIT 替换为缓存失效
-            groupCacheService.invalidateUserGroups(userId);
-            groupCacheService.invalidateGroupDetail(groupId);
+            
             if (deleted > 0) {
+                // P1优化：使用本地消息表处理缓存失效
+                String eventPayload = JSON.toJSONString(Map.of(
+                    "groupId", groupId,
+                    "userId", userId,
+                    "action", "GROUP_MEMBER_REMOVED"
+                ));
+                outboxEventService.createEvent(
+                    OutboxEvent.EventTypes.GROUP_MEMBER_REMOVED, 
+                    groupId + ":" + userId, 
+                    eventPayload
+                );
+                
                 logger.info("用户 {} 已退出群组 {}", userId, groupId);
                 return true;
             } else {
