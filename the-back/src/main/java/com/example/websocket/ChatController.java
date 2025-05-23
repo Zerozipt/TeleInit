@@ -112,7 +112,7 @@ public class ChatController {
             List<FriendsResponse> friendIds = chatService.getFriends(userId);
 
             List<FriendsResponse> friendRequests = chatService.getFriendRequests(userId);
-
+            
             List<Group_member> groupIds = chatService.getGroups(userId);
  
             List<List<Group_message>> groupMessages = groupIds.stream().map(groupId -> chatService.getGroupChatHistoryByGroupId(groupId.getGroupId(), 100)).collect(Collectors.toList());
@@ -194,6 +194,8 @@ public class ChatController {
     @MessageMapping("/chat/channel")
     public void handlePublicMessage(@Payload ChatMessage message, CustomPrincipal principal) {
         System.out.println("群组消息: " + message);
+        System.out.println("接收到的临时ID: " + message.getTempId());
+        
         // 填充发送者和时间戳
         message.setSenderId(Integer.parseInt(principal.getName()));
         message.setSender(principal.getUsername());
@@ -222,6 +224,9 @@ public class ChatController {
     // 处理私人消息 - 简化，不使用路径变量
     @MessageMapping("/chat/private")
     public void handlePrivateMessage(@Payload ChatMessage message, CustomPrincipal principal) {
+        System.out.println("私聊消息: " + message);
+        System.out.println("接收到的临时ID: " + message.getTempId());
+        
         // 填充发送者信息和时间戳
         message.setSender(principal.getUsername());
         message.setSenderId(Integer.parseInt(principal.getName()));
@@ -402,7 +407,7 @@ public class ChatController {
     @GetMapping("/history/group")
     public RestBean<List<Group_message>> getGroupChatHistory(@RequestParam String groupId, @RequestParam int limit) {
         List<Group_message> groupMessages = chatService.getGroupChatHistoryByGroupId(groupId, limit);
-        
+        //forEach
         groupMessages.forEach(msg -> {
             if (msg.getMessageType() == null) {
                 if (msg.getFileUrl() != null && !msg.getFileUrl().isEmpty()) {
@@ -421,4 +426,5 @@ public class ChatController {
         
         return RestBean.success(groupMessages);
     }
+    
 }

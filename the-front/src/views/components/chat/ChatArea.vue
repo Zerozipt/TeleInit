@@ -98,6 +98,34 @@
         <div class="message-time" :class="{ 'time-self': isSelfMessage(message) }">
           {{ formatTime(message.timestamp) }}
         </div>
+        
+        <!-- 消息状态指示器（仅对自己发送的消息显示） -->
+        <div v-if="isSelfMessage(message)" class="message-status" :class="{ 'status-self': isSelfMessage(message) }">
+          <div class="status-indicator" :class="getStatusClass(message)">
+            <template v-if="message.status === 'sending'">
+              <el-icon class="is-loading"><el-icon-loading /></el-icon>
+              <span class="status-text">发送中</span>
+            </template>
+            <template v-else-if="message.status === 'sent'">
+              <el-icon class="status-icon sent"><el-icon-check /></el-icon>
+              <span class="status-text">已发送</span>
+            </template>
+            <template v-else-if="message.status === 'delivered'">
+              <el-icon class="status-icon delivered"><el-icon-check /></el-icon>
+              <el-icon class="status-icon delivered"><el-icon-check /></el-icon>
+              <span class="status-text">已送达</span>
+            </template>
+            <template v-else-if="message.status === 'failed'">
+              <el-icon class="status-icon failed" @click="handleRetryMessage(message)"><el-icon-refresh /></el-icon>
+              <span class="status-text failed" @click="handleRetryMessage(message)">发送失败，点击重试</span>
+            </template>
+            <template v-else-if="message.status === 'read'">
+              <el-icon class="status-icon read"><el-icon-check /></el-icon>
+              <el-icon class="status-icon read"><el-icon-check /></el-icon>
+              <span class="status-text">已读</span>
+            </template>
+          </div>
+        </div>
       </div>
 
       <!-- Empty Chat Placeholder -->
@@ -138,7 +166,7 @@
 
 <script setup>
 import { ref, watch, nextTick, onMounted, onUnmounted, computed } from 'vue';
-import { ChatRound as ElIconChatRound, Picture, VideoPlay, Headset, Document, Download } from '@element-plus/icons-vue';
+import { ChatRound as ElIconChatRound, Picture, VideoPlay, Headset, Document, Download, Loading as ElIconLoading, Check as ElIconCheck, Refresh as ElIconRefresh } from '@element-plus/icons-vue';
 import data from 'emoji-mart-vue-fast/data/all.json';
 import { Picker, EmojiIndex } from 'emoji-mart-vue-fast/src';
 import 'emoji-mart-vue-fast/css/emoji-mart.css';
@@ -155,7 +183,7 @@ const props = defineProps({
   noMoreHistory: Boolean
 });
 
-const emit = defineEmits(['send-message', 'load-more-history']);
+const emit = defineEmits(['send-message', 'load-more-history', 'retry-message']);
 
 const messageText = ref('');
 const showEmojiPicker = ref(false);
@@ -221,6 +249,12 @@ const getGroupMemberCount = () => {
   
   // 如果contact对象中有memberCount字段，则使用该字段
   return props.contact.memberCount || '未知';
+};
+
+// 获取消息状态的CSS类名
+const getStatusClass = (message) => {
+  if (!message.status) return '';
+  return `status-${message.status}`;
 };
 
 const handleSendMessage = () => {
@@ -481,6 +515,19 @@ const getMessageTypeFromFile = (file) => {
   if (file.type.startsWith('video/')) return 'VIDEO';
   if (file.type.startsWith('audio/')) return 'AUDIO';
   return 'FILE';
+};
+
+// 处理重试消息
+const handleRetryMessage = (message) => {
+  console.log('[ChatArea] 处理重试消息:', message);
+  
+  // 通过全局函数重试（这些函数在ChatView中定义）
+  if (window.retryMessage && message.id) {
+    window.retryMessage(message.id);
+  } else {
+    // 如果没有全局重试函数，发出事件让父组件处理
+    emit('retry-message', message);
+  }
 };
 
 onMounted(() => document.addEventListener('click', handleClickOutside));
@@ -961,5 +1008,100 @@ onUnmounted(() => document.removeEventListener('click', handleClickOutside));
 .message-bubble.file-message {
   padding: 0;
   overflow: hidden;
+}
+
+/* 消息状态样式 */
+.message-status {
+  margin-top: 4px;
+  font-size: 12px;
+  opacity: 0.7;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.message-status.status-self {
+  justify-content: flex-end;
+}
+
+.status-indicator {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.status-text {
+  color: #666;
+  font-size: 11px;
+}
+
+.status-text.failed {
+  color: #f56c6c;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.status-text.failed:hover {
+  color: #f78989;
+}
+
+.status-icon {
+  font-size: 12px;
+}
+
+.status-icon.sent {
+  color: #909399;
+}
+
+.status-icon.delivered {
+  color: #67c23a;
+}
+
+.status-icon.read {
+  color: #409eff;
+}
+
+.status-icon.failed {
+  color: #f56c6c;
+  cursor: pointer;
+}
+
+.status-icon.failed:hover {
+  color: #f78989;
+}
+
+.is-loading {
+  animation: rotate 2s linear infinite;
+  color: #409eff;
+}
+
+@keyframes rotate {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 状态指示器整体样式 */
+.status-sending {
+  color: #409eff;
+}
+
+.status-sent {
+  color: #909399;
+}
+
+.status-delivered {
+  color: #67c23a;
+}
+
+.status-failed {
+  color: #f56c6c;
+}
+
+.status-read {
+  color: #409eff;
 }
 </style> 

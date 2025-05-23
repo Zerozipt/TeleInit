@@ -22,11 +22,25 @@ public interface ChatService {
     boolean savePublicMessage(ChatMessage message);
     
     /**
+     * 保存公共聊天消息并返回消息ID
+     * @param message 聊天消息
+     * @return 保存成功时返回消息ID，失败时返回null
+     */
+    String savePublicMessageWithId(ChatMessage message);
+    
+    /**
      * 保存私人聊天消息
      * @param message 私人聊天消息
      * @return 操作结果
      */
-        boolean savePrivateMessage(ChatMessage message);
+    boolean savePrivateMessage(ChatMessage message);
+
+    /**
+     * 保存私人聊天消息并返回消息ID
+     * @param message 私人聊天消息
+     * @return 保存成功时返回消息ID，失败时返回null
+     */
+    String savePrivateMessageWithId(ChatMessage message);
 
     /**
      * 获取用户的好友列表

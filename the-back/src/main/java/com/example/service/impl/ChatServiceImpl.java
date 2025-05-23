@@ -35,6 +35,7 @@ import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import org.springframework.beans.factory.annotation.Autowired;
 import com.example.service.ChatCacheService;
 import com.example.service.OnlineStatusService;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 /**
  * 聊天服务实现类，使用Redis存储最近消息，可以根据需要扩展为数据库存储
  */
@@ -84,6 +85,20 @@ public class ChatServiceImpl implements ChatService {
     }
 
     @Override
+    public String savePublicMessageWithId(ChatMessage message) {
+        try {
+            Group_message group_message = ConvertUtils.convertToGroupMessage(message);
+            group_messageMapper.insert(group_message);
+            chatCacheService.cacheGroupMessage(group_message.getGroupId(), JSON.toJSONString(group_message));
+            logger.info("保存群组消息: {}, 发送者: {}, 消息ID: {}", message.getContent(), message.getSender(), group_message.getId());
+            return String.valueOf(group_message.getId());
+        } catch (Exception e) {
+            logger.error("保存群组消息失败", e);
+            return null;
+        }
+    }
+
+    @Override
     public boolean savePrivateMessage(ChatMessage message) {
         try {
             // 持久化到数据库
@@ -96,6 +111,22 @@ public class ChatServiceImpl implements ChatService {
         } catch (Exception e) {
             logger.error("保存私人消息 (DB/Redis) 失败", e);
             return false;
+        }
+    }
+    
+    @Override
+    public String savePrivateMessageWithId(ChatMessage message) {
+        try {
+            // 持久化到数据库
+            PrivateChatMessage privateChatMessage = ConvertUtils.convertToPrivateChatMessage(message);
+            privateMessageMapper.insert(privateChatMessage);
+            // 缓存私聊消息及相关数据
+            chatCacheService.cachePrivateMessage(message);
+            logger.info("保存私人消息 (DB+Redis): {}, 从 {} 到 {}, 消息ID: {}", privateChatMessage.getContent(), message.getSenderId(), message.getReceiverId(), privateChatMessage.getId());
+            return String.valueOf(privateChatMessage.getId());
+        } catch (Exception e) {
+            logger.error("保存私人消息 (DB/Redis) 失败", e);
+            return null;
         }
     }
     
@@ -155,19 +186,35 @@ public class ChatServiceImpl implements ChatService {
     }
 
     public List<Friends> getFriendsByUserId(String userId){
-      
         int id = Integer.parseInt(userId);
-        List<Friends> friends = friendsMapper.selectList(
-            Wrappers.<Friends>query().eq("the_second_user_id", id)
-            .eq("status", Friends.Status.accepted)
-            .or().eq("the_first_user_id", id)
-            .eq("status", Friends.Status.accepted)
-            .orderByDesc("created_at"));
-        return friends;
+        
+        // 修改查询逻辑：按用户对查找最新的好友记录，只返回状态为accepted的最新记录
+        List<Friends> allFriendRecords = friendsMapper.selectList(
+            Wrappers.<Friends>query()
+                .and(q -> q.eq("the_second_user_id", id).or().eq("the_first_user_id", id))
+                .orderByDesc("created_at")
+        );
+        
+        // 按用户对分组，只保留每对用户之间最新的accepted记录
+        Map<String, Friends> latestFriendships = new HashMap<>();
+        
+        for (Friends friend : allFriendRecords) {
+            // 生成用户对的唯一键（确保A-B和B-A是同一个键）
+            String userPairKey = generateUserPairKey(friend.getTheFirstUserId(), friend.getTheSecondUserId());
+            
+            // 只有状态为accepted且还没有该用户对的记录时才保留
+            if (friend.getStatus() == Friends.Status.accepted && !latestFriendships.containsKey(userPairKey)) {
+                latestFriendships.put(userPairKey, friend);
+            }
+        }
+        
+        return new ArrayList<>(latestFriendships.values());
     }
 
     public List<Friends> getFriendRequestsByUserId(String userId){
         int id = Integer.parseInt(userId);
+        
+        // 返回所有历史请求记录（用于前端展示历史）
         List<Friends> friends = friendsMapper.selectList(
             Wrappers.<Friends>query()
                 .in("status", Friends.Status.requested, Friends.Status.accepted, Friends.Status.rejected)
@@ -175,150 +222,75 @@ public class ChatServiceImpl implements ChatService {
                            .or().eq("the_first_user_id", id))
                 .orderByDesc("created_at")
         );
-        //返回所有曾经的请求
+        
         return friends;
     }
     
-    public List<Group_member> getGroupsByUserId(String userId){
-        try {
-            int id = Integer.parseInt(userId);
-            System.out.println("从数据库获取的群组列表: " + id);
-            return groupMemberMapper.selectList(Wrappers.<Group_member>query().eq("user_id", id));
-        } catch (NumberFormatException e) {
-            logger.error("Invalid userId format: {}", userId, e);
-            // 或者抛出自定义异常，或者返回空列表，根据你的错误处理策略决定
-            return new ArrayList<>();
-        }
+    // 新增辅助方法：生成用户对的唯一键
+    private String generateUserPairKey(int userId1, int userId2) {
+        return userId1 < userId2 ? userId1 + "_" + userId2 : userId2 + "_" + userId1;
+    }
+    
+    // 新增方法：获取两个用户之间的最新请求记录
+    private Friends getLatestFriendRequest(int senderId, int receiverId) {
+        List<Friends> requests = friendsMapper.selectList(
+            Wrappers.<Friends>query()
+                .eq("the_first_user_id", senderId)
+                .eq("the_second_user_id", receiverId)
+                .orderByDesc("created_at")
+                .last("LIMIT 1")
+        );
+        
+        return requests.isEmpty() ? null : requests.get(0);
     }
 
     @Override
     public boolean isFriend(int userId1, int userId2) {
-        // 检查两个用户是否已经是好友关系
-        List<Friends> friends = friendsMapper.selectList(Wrappers.<Friends>query()
-            .eq("the_first_user_id", userId1)
-            .eq("the_second_user_id", userId2)
-            .eq("status", Friends.Status.accepted));
+        // 修改逻辑：检查两个用户之间最新的记录是否为accepted状态
+        List<Friends> allRecords = friendsMapper.selectList(
+            Wrappers.<Friends>query()
+                .and(q -> q
+                    .and(subQ -> subQ.eq("the_first_user_id", userId1).eq("the_second_user_id", userId2))
+                    .or(subQ -> subQ.eq("the_first_user_id", userId2).eq("the_second_user_id", userId1))
+                )
+                .orderByDesc("created_at")
+                .last("LIMIT 1")
+        );
         
-        if (!friends.isEmpty()) {
-            return true;
-        }
-
-        // 检查反向关系
-        friends = friendsMapper.selectList(Wrappers.<Friends>query()
-            .eq("the_first_user_id", userId2)
-            .eq("the_second_user_id", userId1)
-            .eq("status", Friends.Status.accepted));
-
-        return !friends.isEmpty();
+        return !allRecords.isEmpty() && allRecords.get(0).getStatus() == Friends.Status.accepted;
     }
 
     @Override
     public boolean hasFriendRequest(int senderId, int receiverId) {
-        // 检查是否已经存在好友请求
-        List<Friends> requests = friendsMapper.selectList(Wrappers.<Friends>query()
-            .eq("the_first_user_id", senderId)
-            .eq("the_second_user_id", receiverId)
-            .eq("status", Friends.Status.requested));
-        
-        if (!requests.isEmpty()) {
-            return true;
-        }
-        return false;
-    }
-
-    @Override
-    public boolean saveFriendRequest(Friends friendRequest) {
-        try {
-            if (friendRequest.getTheFirstUserId() == friendRequest.getTheSecondUserId()) {
-                logger.error("不能添加自己为好友");
-                return false;
-            }
-            
-            friendsMapper.insert(friendRequest);
-            // 通知被请求方有新的好友请求
-            // 这里可以使用WebSocket通知前端
-            return true;
-        } catch (Exception e) {
-            logger.error("保存好友请求失败", e);
-            return false;
-        }
+        // 修改逻辑：检查是否已经存在未处理的好友请求（最新记录为requested状态）
+        Friends latestRequest = getLatestFriendRequest(senderId, receiverId);
+        return latestRequest != null && latestRequest.getStatus() == Friends.Status.requested;
     }
 
     @Override
     public boolean ReceivedFriendRequests(int senderId, int receiverId) {
         try {
-            //能到这个方法，说明senderId向receiverId发送了好友请求
-            //所以直接将好友状态设置为accepted
-            friendsMapper.update(new LambdaUpdateWrapper<Friends>()
-                .eq(Friends::getTheFirstUserId, senderId)
-                .eq(Friends::getTheSecondUserId, receiverId)
-                .set(Friends::getStatus, Friends.Status.accepted));
-            return true;
-        } catch (Exception e) {
-            logger.error("接受好友请求失败", e);
-            return false;
-        }
-    }
-
-    @Override
-    public boolean acceptFriendRequest(int requestId, int userId) {
-        try {
-            // 获取请求
-            Friends request = friendsMapper.selectById(requestId);
-            if (request == null || request.getTheSecondUserId() != userId || 
-                request.getStatus() != Friends.Status.requested) {
-                logger.error("好友请求不存在或无权操作");
-                return false;
-            }
-
-            // 更新状态为已接受
-            request.setStatus(Friends.Status.accepted);
-
-            return friendsMapper.updateById(request) > 0;
-        } catch (Exception e) {
-            logger.error("接受好友请求失败", e);
-            return false;
-        }
-    }
-
-    @Override
-    public boolean rejectFriendRequest(int requestId, int userId) {
-        try {
-            // 获取请求
-            Friends request = friendsMapper.selectById(requestId);
-            if (request == null || request.getTheSecondUserId() != userId ||
-                request.getStatus() != Friends.Status.requested) {
-                logger.error("好友请求不存在或无权操作");
-                return false;
-            }
-            // 更新状态为已拒绝
-            request.setStatus(Friends.Status.rejected);
-            return friendsMapper.updateById(request) > 0;
-        } catch (Exception e) {
-            logger.error("拒绝好友请求失败", e);
-            return false;
-        }
-    }
-
-    @Override
-    public boolean cancelFriendRequest(int currentUserId, int targetUserId) {
-        try {
-            LambdaUpdateWrapper<Friends> updateWrapper = new LambdaUpdateWrapper<>();
-            updateWrapper.eq(Friends::getTheFirstUserId, currentUserId)
-                         .eq(Friends::getTheSecondUserId, targetUserId)
-                         .eq(Friends::getStatus, Friends.Status.requested)
-                         .set(Friends::getStatus, Friends.Status.rejected);
+            // 修复Bug：只处理最新的请求记录
+            Friends latestRequest = getLatestFriendRequest(senderId, receiverId);
             
-            int updatedRows = friendsMapper.update(null, updateWrapper);
+            if (latestRequest == null || latestRequest.getStatus() != Friends.Status.requested) {
+                logger.warn("没有找到有效的好友请求: senderId={}, receiverId={}", senderId, receiverId);
+                return false;
+            }
+            
+            // 只更新这一条特定的记录
+            latestRequest.setStatus(Friends.Status.accepted);
+            int updatedRows = friendsMapper.updateById(latestRequest);
+            
             if (updatedRows > 0) {
-                logger.info("用户 {} 取消了发往用户 {} 的好友请求", currentUserId, targetUserId);
+                logger.info("用户 {} 接受了来自用户 {} 的好友请求，记录ID: {}", receiverId, senderId, latestRequest.getId());
                 return true;
             } else {
-                logger.warn("取消好友请求未执行或未找到匹配的请求: currentUserId={}, targetUserId={}", currentUserId, targetUserId);
-                return false; // 或根据业务返回特定状态
+                logger.error("更新好友请求状态失败");
+                return false;
             }
         } catch (Exception e) {
-            logger.error("取消好友请求失败: currentUserId={}, targetUserId={}", currentUserId, targetUserId, e);
+            logger.error("接受好友请求失败", e);
             return false;
         }
     }
@@ -326,21 +298,55 @@ public class ChatServiceImpl implements ChatService {
     @Override
     public boolean rejectFriendRequestByUsers(int currentUserId, int senderIdOfRequest) {
         try {
-            LambdaUpdateWrapper<Friends> updateWrapper = new LambdaUpdateWrapper<>();
-            updateWrapper.eq(Friends::getTheFirstUserId, senderIdOfRequest) // 请求的发送方
-                         .eq(Friends::getTheSecondUserId, currentUserId)    // 请求的接收方 (当前操作用户)
-                         .eq(Friends::getStatus, Friends.Status.requested)
-                         .set(Friends::getStatus, Friends.Status.rejected);
-            int updatedRows = friendsMapper.update(null, updateWrapper);
+            // 修复Bug：只处理最新的请求记录
+            Friends latestRequest = getLatestFriendRequest(senderIdOfRequest, currentUserId);
+            
+            if (latestRequest == null || latestRequest.getStatus() != Friends.Status.requested) {
+                logger.warn("没有找到有效的好友请求: senderId={}, receiverId={}", senderIdOfRequest, currentUserId);
+                return false;
+            }
+            
+            // 只更新这一条特定的记录
+            latestRequest.setStatus(Friends.Status.rejected);
+            int updatedRows = friendsMapper.updateById(latestRequest);
+            
             if (updatedRows > 0) {
-                logger.info("用户 {} 拒绝了来自用户 {} 的好友请求", currentUserId, senderIdOfRequest);
+                logger.info("用户 {} 拒绝了来自用户 {} 的好友请求，记录ID: {}", currentUserId, senderIdOfRequest, latestRequest.getId());
                 return true;
             } else {
-                logger.warn("拒绝好友请求未执行或未找到匹配的请求: receiverId={}, senderId={}", currentUserId, senderIdOfRequest);
+                logger.error("更新好友请求状态失败");
                 return false;
             }
         } catch (Exception e) {
             logger.error("拒绝好友请求失败: receiverId={}, senderId={}", currentUserId, senderIdOfRequest, e);
+            return false;
+        }
+    }
+
+    @Override
+    public boolean cancelFriendRequest(int currentUserId, int targetUserId) {
+        try {
+            // 修复Bug：只处理最新的请求记录
+            Friends latestRequest = getLatestFriendRequest(currentUserId, targetUserId);
+            
+            if (latestRequest == null || latestRequest.getStatus() != Friends.Status.requested) {
+                logger.warn("没有找到有效的好友请求可以取消: senderId={}, receiverId={}", currentUserId, targetUserId);
+                return false;
+            }
+            
+            // 将最新的请求标记为rejected（取消）
+            latestRequest.setStatus(Friends.Status.rejected);
+            int updatedRows = friendsMapper.updateById(latestRequest);
+            
+            if (updatedRows > 0) {
+                logger.info("用户 {} 取消了发往用户 {} 的好友请求，记录ID: {}", currentUserId, targetUserId, latestRequest.getId());
+                return true;
+            } else {
+                logger.error("取消好友请求失败");
+                return false;
+            }
+        } catch (Exception e) {
+            logger.error("取消好友请求失败: currentUserId={}, targetUserId={}", currentUserId, targetUserId, e);
             return false;
         }
     }
@@ -417,6 +423,76 @@ public class ChatServiceImpl implements ChatService {
         } catch (Exception e) {
             logger.error("删除好友失败: {} 和 {}", userId1, userId2, e);
             return false;
+        }
+    }
+
+    @Override
+    public boolean saveFriendRequest(Friends friendRequest) {
+        try {
+            if (friendRequest.getTheFirstUserId() == friendRequest.getTheSecondUserId()) {
+                logger.error("不能添加自己为好友");
+                return false;
+            }
+            
+            friendsMapper.insert(friendRequest);
+            // 通知被请求方有新的好友请求
+            // 这里可以使用WebSocket通知前端
+            return true;
+        } catch (Exception e) {
+            logger.error("保存好友请求失败", e);
+            return false;
+        }
+    }
+
+    @Override
+    public boolean acceptFriendRequest(int requestId, int userId) {
+        try {
+            // 获取请求
+            Friends request = friendsMapper.selectById(requestId);
+            if (request == null || request.getTheSecondUserId() != userId || 
+                request.getStatus() != Friends.Status.requested) {
+                logger.error("好友请求不存在或无权操作");
+                return false;
+            }
+
+            // 更新状态为已接受
+            request.setStatus(Friends.Status.accepted);
+
+            return friendsMapper.updateById(request) > 0;
+        } catch (Exception e) {
+            logger.error("接受好友请求失败", e);
+            return false;
+        }
+    }
+
+    @Override
+    public boolean rejectFriendRequest(int requestId, int userId) {
+        try {
+            // 获取请求
+            Friends request = friendsMapper.selectById(requestId);
+            if (request == null || request.getTheSecondUserId() != userId ||
+                request.getStatus() != Friends.Status.requested) {
+                logger.error("好友请求不存在或无权操作");
+                return false;
+            }
+            // 更新状态为已拒绝
+            request.setStatus(Friends.Status.rejected);
+            return friendsMapper.updateById(request) > 0;
+        } catch (Exception e) {
+            logger.error("拒绝好友请求失败", e);
+            return false;
+        }
+    }
+    
+    public List<Group_member> getGroupsByUserId(String userId){
+        try {
+            int id = Integer.parseInt(userId);
+            System.out.println("从数据库获取的群组列表: " + id);
+            return groupMemberMapper.selectList(Wrappers.<Group_member>query().eq("user_id", id));
+        } catch (NumberFormatException e) {
+            logger.error("Invalid userId format: {}", userId, e);
+            // 或者抛出自定义异常，或者返回空列表，根据你的错误处理策略决定
+            return new ArrayList<>();
         }
     }
 } 

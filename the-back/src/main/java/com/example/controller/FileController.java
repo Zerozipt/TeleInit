@@ -26,17 +26,18 @@ import jakarta.annotation.PostConstruct;
 public class FileController {
 
     private static final Logger logger = LoggerFactory.getLogger(FileController.class);
-
+    
     @Value("${file.upload-dir}")
     private String uploadDir;
 
     @Value("${file.base-access-url}")
     private String baseAccessUrl;
 
+    //这个函数的作用是初始化文件上传目录，确保目录存在，并记录绝对路径方便调试
     @PostConstruct
     public void init() {
         File dir = new File(uploadDir);
-        
+
         // 确保目录存在
         if (!dir.exists()) {
             if(dir.mkdirs()) {
@@ -50,6 +51,7 @@ public class FileController {
         logger.info("文件上传目录路径: {}", dir.getAbsolutePath());
         logger.info("文件访问URL前缀: {}", baseAccessUrl);
     }
+
 
     @PostMapping("/upload")
     public ResponseEntity<JSONObject> uploadFile(@RequestParam("file") MultipartFile multipartFile) {

@@ -79,7 +79,7 @@ public class GroupServiceImpl implements GroupService {
         creatorMember.setUserId(creatorId);
         creatorMember.setJoinedAt(new Date()); // 格式化加入时间
         creatorMember.setRole("CREATOR"); // 或者 "ADMIN", "OWNER" 等
-
+        creatorMember.setGroupName(groupName);
         int memberInserted = groupMemberMapper.insert(creatorMember);
         groupCacheService.invalidateUserGroups(creatorId);
         groupCacheService.invalidateGroupDetail(newGroup.getGroupId());

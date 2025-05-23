@@ -220,6 +220,20 @@ const chatHistories = ref(new Map());
 const isLoadingHistory = ref(false);
 const noMoreHistory = ref(false);
 
+// 添加消息状态管理
+const MESSAGE_STATUS = {
+  SENDING: 'sending',     // 发送中
+  SENT: 'sent',          // 已发送到服务器
+  DELIVERED: 'delivered', // 已送达对方
+  FAILED: 'failed',      // 发送失败
+  READ: 'read'           // 已读
+};
+
+// 消息状态映射 - 存储临时消息ID到真实消息ID的映射
+const messageStatusMap = ref(new Map());
+// 待确认的消息队列
+const pendingMessages = ref(new Map());
+
 // 添加未读消息管理
 const unreadMessages = ref(new Map()); // 存储每个联系人/群组的未读消息数量
 const latestMessages = ref(new Map()); // 存储每个联系人/群组的最新消息内容
@@ -357,10 +371,12 @@ const registerWebSocketHandlers = () => {
     stompClientInstance.off('onPrivateMessage', handlePrivateMessage);
     stompClientInstance.off('onPublicMessage', handlePublicMessage);
     stompClientInstance.off('onError', handleError);
+    stompClientInstance.off('onMessageAck', handleMessageAck);
 
     stompClientInstance.on('onPrivateMessage', handlePrivateMessage);
     stompClientInstance.on('onPublicMessage', handlePublicMessage);
     stompClientInstance.on('onError', handleError);
+    stompClientInstance.on('onMessageAck', handleMessageAck);
     console.log('[ChatView] WebSocket处理程序已注册。');
 };
 
@@ -430,9 +446,17 @@ onUnmounted(() => {
     // 组件销毁时清理监听器
     stompClientInstance.off('onPrivateMessage', handlePrivateMessage);
     stompClientInstance.off('onPublicMessage', handlePublicMessage);
-    // stompClientInstance.off('onConnected', handleConnected);
     stompClientInstance.off('onError', handleError);
+    stompClientInstance.off('onMessageAck', handleMessageAck);
+    
+    // 清理全局函数
+    if (window.retryMessage) delete window.retryMessage;
+    if (window.cancelMessage) delete window.cancelMessage;
+    
+    // 清理定时器和状态
     stopTitleFlashing();
+    pendingMessages.value.clear();
+    messageStatusMap.value.clear();
 });
 
 // --- WebSocket事件处理程序 ---
@@ -448,21 +472,81 @@ const handlePrivateMessage = (message) => {
   
   const msg = normalizeMessage(message, 'private');
   
-  // 不再过滤掉自己发送的消息，让发送者也能看到自己发的消息
-  // if (Number(msg.senderId) === Number(currentUserId.value)) {
-  //   return;
-  // }
+  // 检查是否是自己发送的消息的确认
+  if (Number(msg.senderId) === Number(currentUserId.value)) {
+    console.log('[ChatView] 这是自己发送的消息确认');
+    // 这是自己发送的消息确认，检查是否已有乐观更新的消息
+    const cid = msg.receiverId;
+    const idKey = String(cid);
+    const existing = chatHistories.value.get(idKey) || [];
+    
+    // 查找对应的乐观更新消息
+    const optimisticMsgIndex = existing.findIndex(existingMsg => 
+      existingMsg.isOptimistic && 
+      existingMsg.senderId === msg.senderId &&
+      existingMsg.content === msg.content &&
+      Math.abs(new Date(existingMsg.timestamp) - new Date(msg.timestamp)) < 30000 // 30秒内
+    );
+    
+    if (optimisticMsgIndex !== -1) {
+      // 找到对应的乐观更新消息，更新其状态和ID
+      const optimisticMsg = existing[optimisticMsgIndex];
+      optimisticMsg.id = msg.id;
+      optimisticMsg.status = MESSAGE_STATUS.SENT;
+      optimisticMsg.isOptimistic = false;
+      optimisticMsg.timestamp = msg.timestamp; // 使用服务器时间
+      
+      // 从待确认队列中移除
+      pendingMessages.value.forEach((pendingMsg, tempId) => {
+        if (pendingMsg.message === optimisticMsg) {
+          pendingMessages.value.delete(tempId);
+        }
+      });
+      
+      console.log('[ChatView] 乐观更新消息已确认:', optimisticMsg);
+      chatHistories.value = new Map(chatHistories.value);
+      return; // 不需要添加新消息
+    }
+  } else {
+    console.log('[ChatView] 这是收到的他人消息');
+  }
   
-  // 防止重复消息
+  // 检查是否是重复消息（针对接收到的消息）
   const cid = msg.senderId === Number(currentUserId.value) ? msg.receiverId : msg.senderId;
   const idKey = String(cid);
   const existing = chatHistories.value.get(idKey) || [];
-  if (existing.length > 0) {
-    const last = existing[existing.length - 1];
-    if (last.senderId === msg.senderId && last.content === msg.content && Math.abs(new Date(last.timestamp) - new Date(msg.timestamp)) < 1000) {
-      return;
+  
+  console.log(`[ChatView] 检查重复消息 - 聊天ID: ${idKey}, 现有消息数量: ${existing.length}`);
+  console.log(`[ChatView] 消息详情 - ID: ${msg.id}, 发送者: ${msg.senderId}, 内容: ${msg.content}, tempId: ${msg.tempId}`);
+  
+  // 检查是否已存在相同消息（通过ID或内容+时间戳）
+  // 注意：不要使用tempId来判断重复，因为接收者不会有对应的tempId消息
+  const isDuplicate = existing.some(existingMsg => {
+    // 如果有真实的消息ID，优先使用ID比较
+    if (msg.id && existingMsg.id && msg.id === existingMsg.id) {
+      console.log(`[ChatView] 发现重复消息（ID匹配）: ${msg.id}`);
+      return true;
     }
+    
+    // 否则使用发送者+内容+时间戳比较，但排除乐观更新的消息
+    if (!existingMsg.isOptimistic && 
+        existingMsg.senderId === msg.senderId && 
+        existingMsg.content === msg.content && 
+        Math.abs(new Date(existingMsg.timestamp) - new Date(msg.timestamp)) < 1000) {
+      console.log(`[ChatView] 发现重复消息（内容+时间戳匹配）`);
+      return true;
+    }
+    
+    return false;
+  });
+  
+  if (isDuplicate) {
+    console.log('[ChatView] 忽略重复的私聊消息:', msg);
+    return;
   }
+  
+  console.log('[ChatView] 添加新的私聊消息');
+  // 添加新消息
   if (!chatHistories.value.has(idKey)) {
     chatHistories.value.set(idKey, []);
   }
@@ -471,7 +555,6 @@ const handlePrivateMessage = (message) => {
   
   // 更新最新消息内容
   if (msg.fileUrl) {
-    // 如果是文件消息，显示更友好的内容
     const fileType = msg.messageType || '文件';
     latestMessages.value.set(idKey, `[${fileType}] ${msg.fileName || '文件'}`);
   } else {
@@ -485,16 +568,15 @@ const handlePrivateMessage = (message) => {
     const currentCount = unreadMessages.value.get(idKey) || 0;
     unreadMessages.value.set(idKey, currentCount + 1);
     
-    // 播放提示音
-    playNotificationSound();
-    
-    // 发送桌面通知
-    const senderName = msg.sender || '好友';
-    sendNotification(`来自 ${senderName} 的新消息`, msg.content);
-    
-    // 如果窗口不是活动状态，启动标题闪烁
-    if (document.visibilityState !== 'visible') {
-      startTitleFlashing('新消息');
+    // 播放提示音和发送通知（仅针对他人发送的消息）
+    if (Number(msg.senderId) !== Number(currentUserId.value)) {
+      playNotificationSound();
+      const senderName = msg.sender || '好友';
+      sendNotification(`来自 ${senderName} 的新消息`, msg.content);
+      
+      if (document.visibilityState !== 'visible') {
+        startTitleFlashing('新消息');
+      }
     }
   }
 };
@@ -504,20 +586,79 @@ const handlePublicMessage = (message) => {
   
   const msg = normalizeMessage(message, 'group');
   
-  // 不再过滤掉自己发送的消息，让发送者也能看到自己发的消息
-  // if (Number(msg.senderId) === Number(currentUserId.value)) {
-  //   return;
-  // }
-  
-  const idKey = String(msg.groupId);
-  const existing = chatHistories.value.get(idKey) || [];
-  if (existing.length > 0) {
-    const last = existing[existing.length - 1];
-    if (last.senderId === msg.senderId && last.content === msg.content && Math.abs(new Date(last.timestamp) - new Date(msg.timestamp)) < 1000) {
-      return;
+  // 检查是否是自己发送的消息的确认
+  if (Number(msg.senderId) === Number(currentUserId.value)) {
+    console.log('[ChatView] 这是自己发送的群聊消息确认');
+    // 这是自己发送的消息确认，检查是否已有乐观更新的消息
+    const idKey = String(msg.groupId);
+    const existing = chatHistories.value.get(idKey) || [];
+    
+    // 查找对应的乐观更新消息
+    const optimisticMsgIndex = existing.findIndex(existingMsg => 
+      existingMsg.isOptimistic && 
+      existingMsg.senderId === msg.senderId &&
+      existingMsg.content === msg.content &&
+      Math.abs(new Date(existingMsg.timestamp) - new Date(msg.timestamp)) < 30000 // 30秒内
+    );
+    
+    if (optimisticMsgIndex !== -1) {
+      // 找到对应的乐观更新消息，更新其状态和ID
+      const optimisticMsg = existing[optimisticMsgIndex];
+      optimisticMsg.id = msg.id;
+      optimisticMsg.status = MESSAGE_STATUS.SENT;
+      optimisticMsg.isOptimistic = false;
+      optimisticMsg.timestamp = msg.timestamp; // 使用服务器时间
+      
+      // 从待确认队列中移除
+      pendingMessages.value.forEach((pendingMsg, tempId) => {
+        if (pendingMsg.message === optimisticMsg) {
+          pendingMessages.value.delete(tempId);
+        }
+      });
+      
+      console.log('[ChatView] 群聊乐观更新消息已确认:', optimisticMsg);
+      chatHistories.value = new Map(chatHistories.value);
+      return; // 不需要添加新消息
     }
+  } else {
+    console.log('[ChatView] 这是收到的他人群聊消息');
   }
   
+  // 检查是否是重复消息
+  const idKey = String(msg.groupId);
+  const existing = chatHistories.value.get(idKey) || [];
+  
+  console.log(`[ChatView] 检查重复群聊消息 - 群组ID: ${idKey}, 现有消息数量: ${existing.length}`);
+  console.log(`[ChatView] 群聊消息详情 - ID: ${msg.id}, 发送者: ${msg.senderId}, 内容: ${msg.content}, tempId: ${msg.tempId}`);
+  
+  // 检查是否已存在相同消息（通过ID或内容+时间戳）
+  // 注意：不要使用tempId来判断重复，因为接收者不会有对应的tempId消息
+  const isDuplicate = existing.some(existingMsg => {
+    // 如果有真实的消息ID，优先使用ID比较
+    if (msg.id && existingMsg.id && msg.id === existingMsg.id) {
+      console.log(`[ChatView] 发现重复群聊消息（ID匹配）: ${msg.id}`);
+      return true;
+    }
+    
+    // 否则使用发送者+内容+时间戳比较，但排除乐观更新的消息
+    if (!existingMsg.isOptimistic && 
+        existingMsg.senderId === msg.senderId && 
+        existingMsg.content === msg.content && 
+        Math.abs(new Date(existingMsg.timestamp) - new Date(msg.timestamp)) < 1000) {
+      console.log(`[ChatView] 发现重复群聊消息（内容+时间戳匹配）`);
+      return true;
+    }
+    
+    return false;
+  });
+  
+  if (isDuplicate) {
+    console.log('[ChatView] 忽略重复的群聊消息:', msg);
+    return;
+  }
+  
+  console.log('[ChatView] 添加新的群聊消息');
+  // 添加新消息
   if (!chatHistories.value.has(idKey)) {
     chatHistories.value.set(idKey, []);
   }
@@ -526,7 +667,6 @@ const handlePublicMessage = (message) => {
   
   // 更新最新消息内容
   if (msg.fileUrl) {
-    // 如果是文件消息，显示更友好的内容
     const fileType = msg.messageType || '文件';
     latestMessages.value.set(idKey, `${msg.sender || '有人'}: [${fileType}] ${msg.fileName || '文件'}`);
   } else {
@@ -540,17 +680,16 @@ const handlePublicMessage = (message) => {
     const currentCount = unreadMessages.value.get(idKey) || 0;
     unreadMessages.value.set(idKey, currentCount + 1);
     
-    // 播放提示音
-    playNotificationSound();
-    
-    // 发送桌面通知
-    const groupName = findGroupName(idKey) || '群聊';
-    const senderName = msg.sender || '有人';
-    sendNotification(`${groupName} 的新消息`, `${senderName}: ${msg.content}`);
-    
-    // 如果窗口不是活动状态，启动标题闪烁
-    if (document.visibilityState !== 'visible') {
-      startTitleFlashing('新消息');
+    // 播放提示音和发送通知（仅针对他人发送的消息）
+    if (Number(msg.senderId) !== Number(currentUserId.value)) {
+      playNotificationSound();
+      const groupName = findGroupName(idKey) || '群聊';
+      const senderName = msg.sender || '有人';
+      sendNotification(`${groupName} 的新消息`, `${senderName}: ${msg.content}`);
+      
+      if (document.visibilityState !== 'visible') {
+        startTitleFlashing('新消息');
+      }
     }
   }
 };
@@ -637,31 +776,91 @@ const handleSendMessage = (message) => {
   const isFileMessage = message && message.fileUrl;
   console.log(`[ChatView] 处理${isFileMessage ? '文件' : '文本'}消息发送:`, message);
 
+  if (!selectedContact.value) {
+    ElMessage.warning('请先选择聊天对象');
+    return;
+  }
+
+  // 生成临时消息ID
+  const tempId = 'temp_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+  const currentTime = new Date().toISOString();
+  
+  // 构建基本消息内容
+  const content = isFileMessage ? message.content : (typeof message === 'string' ? message.trim() : message.content);
+  
+  if (!content && !isFileMessage) {
+    ElMessage.warning('消息内容不能为空');
+    return;
+  }
+
+  // 创建乐观更新消息对象
+  const optimisticMessage = {
+    id: tempId,
+    type: 'CHAT',
+    content: content,
+    timestamp: currentTime,
+    senderId: Number(currentUserId.value),
+    sender: currentUser.value,
+    status: MESSAGE_STATUS.SENDING, // 标记为发送中
+    isOptimistic: true, // 标记为乐观更新消息
+    // 文件相关字段
+    fileUrl: isFileMessage ? message.fileUrl : null,
+    fileName: isFileMessage ? message.fileName : null,
+    fileType: isFileMessage ? message.fileType : null,
+    fileSize: isFileMessage ? message.fileSize : null,
+    messageType: isFileMessage ? (message.messageType || 'FILE') : null
+  };
+
   // 处理群聊消息
-  if (chatType.value === 'group' && selectedContact.value) {
+  if (chatType.value === 'group') {
     const groupId = selectedContact.value.groupId;
     if (!groupId) {
       ElMessage.error('未选择有效的群聊');
       return;
     }
-
-    // 构建基本消息对象
-    const content = isFileMessage ? message.content : (typeof message === 'string' ? message.trim() : message.content);
     
-    if (isFileMessage) {
-      // 如果是文件消息，使用扩展的文件数据参数
-      stompClientInstance.sendPublicMessage(content, groupId, message);
+    optimisticMessage.groupId = groupId;
+    optimisticMessage.receiverId = null;
+    
+    // 立即添加到聊天历史（乐观更新）
+    const key = String(groupId);
+    if (!chatHistories.value.has(key)) {
+      chatHistories.value.set(key, []);
+    }
+    chatHistories.value.get(key).push(optimisticMessage);
+    
+    // 存储待确认消息
+    pendingMessages.value.set(tempId, {
+      message: optimisticMessage,
+      type: 'group',
+      targetId: groupId,
+      retryCount: 0
+    });
+    
+    // 发送到后端
+    try {
+      if (isFileMessage) {
+        stompClientInstance.sendPublicMessage(content, groupId, message);
+      } else {
+        stompClientInstance.sendPublicMessage(content, groupId);
+      }
       
-      // 不在这里存储消息，因为后端的WebSocket应该会将消息广播给所有人，包括发送者
-    } else {
-      // 普通文本消息
-      stompClientInstance.sendPublicMessage(content, groupId);
-
-      // 不需要再手动添加本地消息，等待WebSocket返回
+      // 设置超时处理
+      setTimeout(() => {
+        if (pendingMessages.value.has(tempId)) {
+          updateMessageStatus(tempId, MESSAGE_STATUS.FAILED);
+          ElMessage.error('消息发送超时，请检查网络连接');
+        }
+      }, 10000); // 10秒超时
+      
+    } catch (error) {
+      console.error('[ChatView] 发送群聊消息失败:', error);
+      updateMessageStatus(tempId, MESSAGE_STATUS.FAILED);
+      ElMessage.error('发送失败: ' + error.message);
     }
   }
   // 处理私聊消息
-  else if (chatType.value === 'private' && selectedContact.value) {
+  else if (chatType.value === 'private') {
     const receiverId = selectedContact.value.userId;
     const receiverName = selectedContact.value.username;
     
@@ -669,24 +868,60 @@ const handleSendMessage = (message) => {
       ElMessage.error('未选择有效的私聊对象');
       return;
     }
-
-    // 构建基本消息对象
-    const content = isFileMessage ? message.content : (typeof message === 'string' ? message.trim() : message.content);
     
-    if (isFileMessage) {
-      // 如果是文件消息，使用扩展的文件数据参数
-      stompClientInstance.sendPrivateMessage(receiverId, content, receiverName, message);
-      
-      // 不在这里存储消息，因为后端的WebSocket应该会将消息发给发送者自己
-    } else {
-      // 普通文本消息
-      stompClientInstance.sendPrivateMessage(receiverId, content, receiverName);
-      
-      // 不需要再手动添加本地消息，等待WebSocket返回
+    optimisticMessage.receiverId = Number(receiverId);
+    optimisticMessage.groupId = null;
+    
+    // 立即添加到聊天历史（乐观更新）
+    const key = String(receiverId);
+    if (!chatHistories.value.has(key)) {
+      chatHistories.value.set(key, []);
     }
-  } else {
-    ElMessage.warning('请先选择聊天对象');
+    chatHistories.value.get(key).push(optimisticMessage);
+    
+    // 存储待确认消息
+    pendingMessages.value.set(tempId, {
+      message: optimisticMessage,
+      type: 'private',
+      targetId: receiverId,
+      receiverName: receiverName,
+      retryCount: 0
+    });
+    
+    // 发送到后端
+    try {
+      if (isFileMessage) {
+        stompClientInstance.sendPrivateMessage(receiverId, content, receiverName, message);
+      } else {
+        stompClientInstance.sendPrivateMessage(receiverId, content, receiverName);
+      }
+      
+      // 设置超时处理
+      setTimeout(() => {
+        if (pendingMessages.value.has(tempId)) {
+          updateMessageStatus(tempId, MESSAGE_STATUS.FAILED);
+          ElMessage.error('消息发送超时，请检查网络连接');
+        }
+      }, 10000); // 10秒超时
+      
+    } catch (error) {
+      console.error('[ChatView] 发送私聊消息失败:', error);
+      updateMessageStatus(tempId, MESSAGE_STATUS.FAILED);
+      ElMessage.error('发送失败: ' + error.message);
+    }
   }
+
+  // 触发界面更新并滚动到底部
+  chatHistories.value = new Map(chatHistories.value);
+  nextTick(() => {
+    // 强制滚动到底部显示新消息
+    const chatArea = document.querySelector('.messages-container');
+    if (chatArea) {
+      chatArea.scrollTop = chatArea.scrollHeight;
+    }
+  });
+  
+  console.log('[ChatView] 乐观更新消息已添加:', optimisticMessage);
 };
 
 // 新函数手动加载更早的历史
@@ -882,6 +1117,152 @@ const handleInvite = async () => {
     ElMessage.error(`邀请失败: ${error.message || '请稍后再试'}`);
   } finally {
     inviteLoading.value = false;
+  }
+};
+
+// 更新消息状态的辅助函数
+const updateMessageStatus = (messageId, newStatus, realMessageId = null) => {
+  console.log(`[ChatView] 更新消息状态: ${messageId} -> ${newStatus}`);
+  
+  // 查找并更新消息状态
+  chatHistories.value.forEach((messages, key) => {
+    const messageIndex = messages.findIndex(msg => msg.id === messageId);
+    if (messageIndex !== -1) {
+      const message = messages[messageIndex];
+      message.status = newStatus;
+      
+      // 如果提供了真实消息ID，则更新消息ID并建立映射
+      if (realMessageId && realMessageId !== messageId) {
+        message.id = realMessageId;
+        message.isOptimistic = false;
+        messageStatusMap.value.set(messageId, realMessageId);
+      }
+      
+      // 触发响应式更新
+      chatHistories.value = new Map(chatHistories.value);
+      console.log(`[ChatView] 消息状态已更新: ${messageId} -> ${newStatus}`);
+      return true;
+    }
+  });
+  
+  // 如果消息确认成功，从待确认队列中移除
+  if (newStatus === MESSAGE_STATUS.SENT || newStatus === MESSAGE_STATUS.DELIVERED) {
+    pendingMessages.value.delete(messageId);
+  }
+  
+  return false;
+};
+
+// 处理消息确认
+const handleMessageAck = (ackData) => {
+  console.log('[ChatView] 收到消息确认:', ackData);
+  
+  if (ackData.success) {
+    updateMessageStatus(ackData.tempId, MESSAGE_STATUS.SENT, ackData.realId);
+    
+    // 如果有真实消息ID，说明消息已成功保存到数据库
+    if (ackData.realId) {
+      console.log(`[ChatView] 消息已确认保存: ${ackData.tempId} -> ${ackData.realId}`);
+    }
+  } else {
+    updateMessageStatus(ackData.tempId, MESSAGE_STATUS.FAILED);
+    ElMessage.error(`消息发送失败: ${ackData.error || '未知错误'}`);
+    
+    // 可以提供重试选项
+    const pendingMsg = pendingMessages.value.get(ackData.tempId);
+    if (pendingMsg && pendingMsg.retryCount < 3) {
+      setTimeout(() => {
+        offerRetry(ackData.tempId);
+      }, 2000);
+    }
+  }
+};
+
+// 提供重试机制
+const offerRetry = (messageId) => {
+  const pendingMsg = pendingMessages.value.get(messageId);
+  if (!pendingMsg) return;
+  
+  ElMessage({
+    message: '消息发送失败，是否重试？',
+    type: 'warning',
+    showClose: true,
+    duration: 0,
+    customClass: 'retry-message',
+    dangerouslyUseHTMLString: true,
+    message: `
+      <div>
+        <p>消息发送失败，是否重试？</p>
+        <p style="margin-top: 8px;">
+          <button onclick="window.retryMessage('${messageId}')" style="margin-right: 8px; padding: 4px 8px; background: #409EFF; color: white; border: none; border-radius: 4px; cursor: pointer;">重试</button>
+          <button onclick="window.cancelMessage('${messageId}')" style="padding: 4px 8px; background: #F56C6C; color: white; border: none; border-radius: 4px; cursor: pointer;">取消</button>
+        </p>
+      </div>
+    `
+  });
+  
+  // 提供全局重试函数
+  window.retryMessage = (msgId) => {
+    retryFailedMessage(msgId);
+    ElMessage.closeAll();
+  };
+  
+  window.cancelMessage = (msgId) => {
+    pendingMessages.value.delete(msgId);
+    updateMessageStatus(msgId, MESSAGE_STATUS.FAILED);
+    ElMessage.closeAll();
+  };
+};
+
+// 重试失败的消息
+const retryFailedMessage = (messageId) => {
+  const pendingMsg = pendingMessages.value.get(messageId);
+  if (!pendingMsg) {
+    console.warn('[ChatView] 找不到待重试的消息:', messageId);
+    return;
+  }
+  
+  pendingMsg.retryCount++;
+  updateMessageStatus(messageId, MESSAGE_STATUS.SENDING);
+  
+  console.log(`[ChatView] 重试发送消息 (第${pendingMsg.retryCount}次):`, messageId);
+  
+  try {
+    const { message, type, targetId, receiverName } = pendingMsg;
+    
+    if (type === 'group') {
+      if (message.fileUrl) {
+        stompClientInstance.sendPublicMessage(message.content, targetId, message);
+      } else {
+        stompClientInstance.sendPublicMessage(message.content, targetId);
+      }
+    } else if (type === 'private') {
+      if (message.fileUrl) {
+        stompClientInstance.sendPrivateMessage(targetId, message.content, receiverName, message);
+      } else {
+        stompClientInstance.sendPrivateMessage(targetId, message.content, receiverName);
+      }
+    }
+    
+    // 重新设置超时
+    setTimeout(() => {
+      if (pendingMessages.value.has(messageId)) {
+        updateMessageStatus(messageId, MESSAGE_STATUS.FAILED);
+        if (pendingMsg.retryCount < 3) {
+          offerRetry(messageId);
+        } else {
+          ElMessage.error('消息发送失败，已达最大重试次数');
+          pendingMessages.value.delete(messageId);
+        }
+      }
+    }, 10000);
+    
+  } catch (error) {
+    console.error('[ChatView] 重试发送消息失败:', error);
+    updateMessageStatus(messageId, MESSAGE_STATUS.FAILED);
+    if (pendingMsg.retryCount < 3) {
+      setTimeout(() => offerRetry(messageId), 2000);
+    }
   }
 };
 </script>

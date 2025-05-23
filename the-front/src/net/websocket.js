@@ -81,7 +81,8 @@ class StompClientWrapper {
             // 新增回调类型
             friendRequestsUpdated: [],
             onGroupInvitationsUpdated: [], // 新增群组邀请更新事件
-            showSystemNotification: []
+            showSystemNotification: [],
+            onMessageAck: [] // 新增消息确认事件
         };
         // 添加这里 - 页面关闭事件监听
     if (typeof window !== 'undefined') {
@@ -748,6 +749,36 @@ class StompClientWrapper {
                 console.error(`[StompClientWrapper] 订阅 ${destination} 失败:`, e);
                 this._trigger('onError', `订阅系统消息频道失败: ${e.message}`);
             }
+        } else if (this.subscriptions[destination]) {
+            console.log(`[StompClientWrapper] 已经订阅了 ${destination}，无需重复订阅`);
+        } else {
+            console.warn(`[StompClientWrapper] 无法订阅 ${destination}，STOMP客户端未连接`);
+        }
+        
+        // 添加消息确认队列订阅
+        const ackDestination = '/user/queue/message-ack';
+        if (!this.subscriptions[ackDestination] && this.stompClient.value?.connected) {
+            try {
+                console.log(`[StompClientWrapper] 正在订阅消息确认频道 ${ackDestination}`);
+                
+                this.subscriptions[ackDestination] = this.stompClient.value.subscribe(ackDestination, (message) => {
+                    try {
+                        console.log('[StompClientWrapper] 收到消息确认:', message);
+                        const ackData = JSON.parse(message.body);
+                        console.log('[StompClientWrapper] 解析后的消息确认:', ackData);
+                        
+                        // 触发消息确认事件
+                        this._trigger('onMessageAck', ackData);
+                    } catch (e) {
+                        console.error('[StompClientWrapper] 解析消息确认出错:', e, message.body);
+                    }
+                });
+                
+                console.log(`[StompClientWrapper] 已成功订阅消息确认频道 ${ackDestination}`);
+            } catch(e) {
+                console.error(`[StompClientWrapper] 订阅 ${ackDestination} 失败:`, e);
+                this._trigger('onError', `订阅消息确认频道失败: ${e.message}`);
+            }
         }
     }
 
@@ -1273,10 +1304,14 @@ class StompClientWrapper {
         
         const destination = '/app/chat/channel'; // 发送到后端的 @MessageMapping
         try {
+            // 生成临时消息ID用于确认
+            const tempId = 'temp_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+            
             // 构建消息载荷，支持文件消息
             const messagePayload = { 
                 content: content, 
-                groupId: groupId 
+                groupId: groupId,
+                tempId: tempId // 添加临时ID
             };
             
             // 如果有文件数据，添加到消息中
@@ -1300,7 +1335,7 @@ class StompClientWrapper {
             });
             console.log(`[StompClientWrapper] Sent public message to ${destination}:`, messagePayload);
             
-            return true;
+            return tempId; // 返回临时ID，以便前端跟踪
         } catch (e) {
             console.error(`[StompClientWrapper] Failed to send public message to ${destination}:`, e);
             this._trigger('onError', `发送群组消息失败: ${e.message}`);
@@ -1326,10 +1361,14 @@ class StompClientWrapper {
         
         const destination = '/app/chat/private'; 
         try {
+            // 生成临时消息ID用于确认
+            const tempId = 'temp_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+            
             // 构建消息载荷，支持文件消息
             const messagePayload = {
                 receiverId: toUserId,   // Use receiverId to match backend getter
-                content: content        // Content is essential
+                content: content,       // Content is essential
+                tempId: tempId         // 添加临时ID
             };
             
             // 如果有文件数据，添加到消息中
@@ -1357,7 +1396,7 @@ class StompClientWrapper {
             });
             console.log(`[StompClientWrapper] 已发送私人消息到 ${destination}，接收者ID: ${toUserId}`);
             
-            return true;
+            return tempId;
         } catch (e) {
             console.error(`[StompClientWrapper] 发送私人消息失败:`, e);
             this._trigger('onError', `发送私人消息失败: ${e.message}`);
