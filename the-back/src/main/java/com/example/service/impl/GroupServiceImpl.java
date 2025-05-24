@@ -1,11 +1,13 @@
 package com.example.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.example.entity.dto.Account;
 import com.example.entity.dto.Group;
 import com.example.entity.dto.Group_member;
 import com.example.entity.dto.OutboxEvent;
 import com.example.entity.dto.GroupInvitation;
+import com.example.entity.dto.CacheWarmupTask;
 import com.example.entity.vo.response.GroupDetailResponse;
 import com.example.entity.vo.response.GroupMemberResponse;
 import com.example.mapper.AccountMapper;
@@ -14,6 +16,7 @@ import com.example.mapper.Group_memberMapper;
 import com.example.mapper.GroupInvitationMapper;
 import com.example.service.GroupService;
 import com.example.service.OutboxEventService;
+import com.example.service.CacheWarmupService;
 import com.example.utils.Const;
 import com.example.utils.RedisKeys;
 import jakarta.annotation.Resource;
@@ -53,6 +56,8 @@ public class GroupServiceImpl implements GroupService {
     private GroupCacheService groupCacheService;
     @Autowired
     private OutboxEventService outboxEventService;
+    @Autowired
+    private CacheWarmupService cacheWarmupService;
     @Autowired
     private SimpMessagingTemplate messagingTemplate;
     
@@ -106,6 +111,9 @@ public class GroupServiceImpl implements GroupService {
                 newGroup.getGroupId(), 
                 eventPayload
             );
+
+            // 🔥 创建缓存预热任务
+            createGroupWarmupTasks(newGroup.getGroupId(), creatorId);
 
             logger.info("群组创建成功: groupId={}, name={}, creatorId={}", 
                        newGroup.getGroupId(), groupName, creatorId);
@@ -161,6 +169,9 @@ public class GroupServiceImpl implements GroupService {
                 groupId + ":" + userId, 
                 eventPayload
             );
+            
+            // 🔥 创建加入群组的预热任务
+            createMemberJoinWarmupTasks(groupId, userId);
             
             logger.info("用户加入群组成功: groupId={}, userId={}", groupId, userId);
             return newMember;
@@ -253,6 +264,9 @@ public class GroupServiceImpl implements GroupService {
                     groupId + ":" + userId, 
                     eventPayload
                 );
+                
+                // 🔥 创建用户离开群组的预热任务
+                createMemberLeaveWarmupTasks(groupId, userId);
                 
                 // 发送WebSocket通知给退出的用户
                 try {
@@ -351,6 +365,9 @@ public class GroupServiceImpl implements GroupService {
                     eventPayload
                 );
                 
+                // 🔥 创建用户被移除的预热任务
+                createMemberLeaveWarmupTasks(groupId, memberId);
+                
                 logger.info("群成员被移除: groupId={}, memberId={}, memberRole={}", 
                            groupId, memberId, member.getRole());
                 return true;
@@ -403,9 +420,17 @@ public class GroupServiceImpl implements GroupService {
                 return false;
             }
             
-            // 更新群组表中的名称
-            group.setName(trimmedName);
-            int groupUpdated = groupMapper.updateById(group);
+            // 使用LambdaUpdateWrapper而不是updateById，避免乐观锁复杂性
+            LambdaUpdateWrapper<Group> updateWrapper = new LambdaUpdateWrapper<>();
+            updateWrapper.eq(Group::getGroupId, groupId)
+                        .set(Group::getName, trimmedName);
+            
+            // 如果需要乐观锁，添加版本号条件
+            if (group.getVersion() != null) {
+                updateWrapper.eq(Group::getVersion, group.getVersion());
+            }
+            
+            int groupUpdated = groupMapper.update(null, updateWrapper);
             
             if (groupUpdated > 0) {
                 // 同时更新group_members表中的群组名称以保持一致性
@@ -435,7 +460,7 @@ public class GroupServiceImpl implements GroupService {
                            groupId, oldName, trimmedName);
                 return true;
             } else {
-                logger.warn("更新群组名称失败: groupId={}, newName={}", groupId, trimmedName);
+                logger.warn("更新群组名称失败，可能存在并发冲突: groupId={}, newName={}", groupId, trimmedName);
                 return false;
             }
         } catch (DuplicateKeyException e) {
@@ -532,6 +557,95 @@ public class GroupServiceImpl implements GroupService {
         } catch (Exception e) {
             logger.error("获取群组成员失败: groupId={}", groupId, e);
             return List.of();
+        }
+    }
+    
+    // ========== 缓存预热相关方法 ==========
+    
+    /**
+     * 为新创建的群组创建预热任务
+     * @param groupId 群组ID
+     * @param creatorId 创建者ID
+     */
+    private void createGroupWarmupTasks(String groupId, int creatorId) {
+        try {
+            // 1. 预热创建者的群组列表（高优先级）
+            String userGroupsCacheKey = RedisKeys.USER_GROUPS + creatorId;
+            cacheWarmupService.createWarmupTask(
+                CacheWarmupTask.CacheTypes.USER_GROUPS,
+                userGroupsCacheKey,
+                String.valueOf(creatorId),
+                CacheWarmupTask.Priority.HIGH
+            );
+            
+            // 2. 预热群组详情（中等优先级）
+            String groupDetailCacheKey = RedisKeys.GROUP_DETAIL + groupId;
+            cacheWarmupService.createWarmupTask(
+                CacheWarmupTask.CacheTypes.GROUP_DETAIL,
+                groupDetailCacheKey,
+                groupId,
+                CacheWarmupTask.Priority.MEDIUM
+            );
+            
+            logger.debug("为新群组创建预热任务: groupId={}, creatorId={}", groupId, creatorId);
+        } catch (Exception e) {
+            // 预热任务创建失败不影响主业务流程
+            logger.warn("创建群组预热任务失败: groupId={}, creatorId={}", groupId, creatorId, e);
+        }
+    }
+    
+    /**
+     * 为用户加入群组创建预热任务
+     * @param groupId 群组ID
+     * @param userId 用户ID
+     */
+    private void createMemberJoinWarmupTasks(String groupId, int userId) {
+        try {
+            // 1. 预热用户的群组列表（高优先级）
+            String userGroupsCacheKey = RedisKeys.USER_GROUPS + userId;
+            cacheWarmupService.createWarmupTask(
+                CacheWarmupTask.CacheTypes.USER_GROUPS,
+                userGroupsCacheKey,
+                String.valueOf(userId),
+                CacheWarmupTask.Priority.HIGH
+            );
+            
+            // 2. 预热群组详情（低优先级，因为可能已经存在）
+            String groupDetailCacheKey = RedisKeys.GROUP_DETAIL + groupId;
+            cacheWarmupService.createWarmupTask(
+                CacheWarmupTask.CacheTypes.GROUP_DETAIL,
+                groupDetailCacheKey,
+                groupId,
+                CacheWarmupTask.Priority.LOW
+            );
+            
+            logger.debug("为用户加入群组创建预热任务: groupId={}, userId={}", groupId, userId);
+        } catch (Exception e) {
+            // 预热任务创建失败不影响主业务流程
+            logger.warn("创建用户加入群组预热任务失败: groupId={}, userId={}", groupId, userId, e);
+        }
+    }
+    
+    /**
+     * 为用户离开群组或被移除创建预热任务
+     * @param groupId 群组ID
+     * @param userId 用户ID
+     */
+    private void createMemberLeaveWarmupTasks(String groupId, int userId) {
+        try {
+            // 主要是重新预热用户的群组列表（高优先级）
+            String userGroupsCacheKey = RedisKeys.USER_GROUPS + userId;
+            cacheWarmupService.createWarmupTask(
+                CacheWarmupTask.CacheTypes.USER_GROUPS,
+                userGroupsCacheKey,
+                String.valueOf(userId),
+                CacheWarmupTask.Priority.HIGH
+            );
+            
+            logger.debug("为用户离开群组创建预热任务: groupId={}, userId={}", groupId, userId);
+        } catch (Exception e) {
+            // 预热任务创建失败不影响主业务流程
+            logger.warn("创建用户离开群组预热任务失败: groupId={}, userId={}", groupId, userId, e);
         }
     }
 }
