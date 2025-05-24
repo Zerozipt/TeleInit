@@ -12,6 +12,12 @@ import com.example.entity.vo.response.ChatMessage;
 import com.example.entity.vo.response.MessageAck;
 import com.example.service.ChatService;
 
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+
 @Component
 @RabbitListener(queues = "privateChat")
 public class PrivateChatMessageListener {
@@ -24,11 +30,21 @@ public class PrivateChatMessageListener {
     
     @Resource
     private SimpMessagingTemplate messagingTemplate;
+    
+    // 增强重试机制
+    private final Map<String, Integer> retryCountMap = new ConcurrentHashMap<>();
+    private final int MAX_RETRY_COUNT = 3; // 最大重试次数
+    private final ScheduledExecutorService scheduledExecutor = Executors.newSingleThreadScheduledExecutor();
 
     @RabbitHandler
     public void receiveMessage(ChatMessage message) {
-        // 将消息保存到数据库
         System.out.println("收到私聊消息：" + message);
+        
+        // 改进消息唯一标识符生成
+        String messageId = generateMessageId(message);
+        
+        // 获取当前重试次数
+        int currentRetryCount = retryCountMap.getOrDefault(messageId, 0);
         
         try {
             // 调用服务层方法保存消息，获取返回的消息ID
@@ -36,6 +52,9 @@ public class PrivateChatMessageListener {
             
             if (savedMessageId != null) {
                 System.out.println("私聊消息成功保存到数据库: " + message.getContent() + ", ID: " + savedMessageId);
+                
+                // 清理重试记录
+                retryCountMap.remove(messageId);
                 
                 // 发送成功确认给发送者
                 if (message.getTempId() != null) {
@@ -48,32 +67,58 @@ public class PrivateChatMessageListener {
                     System.out.println("已发送私聊消息确认: " + ack);
                 }
             } else {
-                System.err.println("私聊消息保存失败");
-                
-                // 发送失败确认给发送者
-                if (message.getTempId() != null) {
-                    MessageAck ack = MessageAck.failure(message.getTempId(), "数据库保存失败", "private");
-                    messagingTemplate.convertAndSendToUser(
-                        message.getSenderId().toString(),
-                        "/queue/message-ack",
-                        ack
-                    );
-                    System.out.println("已发送私聊消息失败确认: " + ack);
-                }
+                handleSaveFailure(message, messageId, currentRetryCount, "数据库保存失败");
             }
         } catch (Exception e) {
             System.err.println("处理私聊消息时发生错误: " + e.getMessage());
             e.printStackTrace();
+            handleSaveFailure(message, messageId, currentRetryCount, "处理消息时发生错误: " + e.getMessage());
+        }
+    }
+    
+    /**
+     * 生成更可靠的消息唯一标识符
+     */
+    private String generateMessageId(ChatMessage message) {
+        return String.format("%s:%s:%s:%d", 
+            message.getTimestamp(), 
+            message.getSenderId(), 
+            message.getReceiverId(), 
+            message.getContent().hashCode());
+    }
+    
+    /**
+     * 处理消息保存失败
+     */
+    private void handleSaveFailure(ChatMessage message, String messageId, int currentRetryCount, String errorMessage) {
+        if (currentRetryCount < MAX_RETRY_COUNT) {
+            // 增加重试次数并延迟重试
+            retryCountMap.put(messageId, currentRetryCount + 1);
             
-            // 发送错误确认给发送者
+            // 延迟重试，避免立即重试造成资源压力
+            scheduledExecutor.schedule(() -> {
+                System.out.println("重试私聊消息保存，第 " + (currentRetryCount + 1) + " 次重试: " + messageId);
+                rabbitTemplate.convertAndSend("privateChat", message);
+            }, (currentRetryCount + 1) * 2, TimeUnit.SECONDS); // 递增延迟
+            
+            // 设置清理任务，避免内存泄漏
+            scheduledExecutor.schedule(() -> {
+                retryCountMap.remove(messageId);
+            }, 10, TimeUnit.MINUTES);
+            
+        } else {
+            // 超过最大重试次数，发送失败确认
+            System.err.println("私聊消息保存失败，已达到最大重试次数: " + messageId);
+            retryCountMap.remove(messageId);
+            
             if (message.getTempId() != null) {
-                MessageAck ack = MessageAck.failure(message.getTempId(), "处理消息时发生错误: " + e.getMessage(), "private");
+                MessageAck ack = MessageAck.failure(message.getTempId(), errorMessage, "private");
                 messagingTemplate.convertAndSendToUser(
                     message.getSenderId().toString(),
                     "/queue/message-ack",
                     ack
                 );
-                System.out.println("已发送私聊消息错误确认: " + ack);
+                System.out.println("已发送私聊消息失败确认: " + ack);
             }
         }
     }

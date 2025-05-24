@@ -359,10 +359,19 @@ public class ChatServiceImpl implements ChatService {
                     logger.warn("没有找到有效的好友请求: senderId={}, receiverId={}", senderId, receiverId);
                     return false;
                 }
+
+                // 使用LambdaUpdateWrapper而不是updateById，避免乐观锁复杂性
+                LambdaUpdateWrapper<Friends> updateWrapper = new LambdaUpdateWrapper<>();
+                updateWrapper.eq(Friends::getId, latestRequest.getId())
+                           .eq(Friends::getStatus, Friends.Status.requested) // 额外的状态检查
+                           .set(Friends::getStatus, Friends.Status.accepted);
                 
-                // 使用乐观锁更新状态
-                latestRequest.setStatus(Friends.Status.accepted);
-                int updatedRows = friendsMapper.updateById(latestRequest);
+                // 如果有版本号，也添加版本号检查
+                if (latestRequest.getVersion() != null) {
+                    updateWrapper.eq(Friends::getVersion, latestRequest.getVersion());
+                }
+                
+                int updatedRows = friendsMapper.update(null, updateWrapper);
                 
                 if (updatedRows > 0) {
                     logger.info("用户 {} 接受了来自用户 {} 的好友请求，记录ID: {}, 尝试次数: {}", 
@@ -407,9 +416,18 @@ public class ChatServiceImpl implements ChatService {
                     return false;
                 }
                 
-                // 使用乐观锁更新状态
-                latestRequest.setStatus(Friends.Status.rejected);
-                int updatedRows = friendsMapper.updateById(latestRequest);
+                // 使用LambdaUpdateWrapper而不是updateById，避免乐观锁复杂性
+                LambdaUpdateWrapper<Friends> updateWrapper = new LambdaUpdateWrapper<>();
+                updateWrapper.eq(Friends::getId, latestRequest.getId())
+                           .eq(Friends::getStatus, Friends.Status.requested) // 额外的状态检查
+                           .set(Friends::getStatus, Friends.Status.rejected);
+                
+                // 如果有版本号，也添加版本号检查
+                if (latestRequest.getVersion() != null) {
+                    updateWrapper.eq(Friends::getVersion, latestRequest.getVersion());
+                }
+                
+                int updatedRows = friendsMapper.update(null, updateWrapper);
                 
                 if (updatedRows > 0) {
                     logger.info("用户 {} 拒绝了来自用户 {} 的好友请求，记录ID: {}, 尝试次数: {}", 
@@ -453,9 +471,18 @@ public class ChatServiceImpl implements ChatService {
                     return false;
                 }
                 
-                // 使用乐观锁更新状态为rejected（取消）
-                latestRequest.setStatus(Friends.Status.rejected);
-                int updatedRows = friendsMapper.updateById(latestRequest);
+                // 使用LambdaUpdateWrapper而不是updateById，避免乐观锁复杂性
+                LambdaUpdateWrapper<Friends> updateWrapper = new LambdaUpdateWrapper<>();
+                updateWrapper.eq(Friends::getId, latestRequest.getId())
+                           .eq(Friends::getStatus, Friends.Status.requested) // 额外的状态检查
+                           .set(Friends::getStatus, Friends.Status.rejected); // 取消也设为rejected
+                
+                // 如果有版本号，也添加版本号检查
+                if (latestRequest.getVersion() != null) {
+                    updateWrapper.eq(Friends::getVersion, latestRequest.getVersion());
+                }
+                
+                int updatedRows = friendsMapper.update(null, updateWrapper);
                 
                 if (updatedRows > 0) {
                     logger.info("用户 {} 取消了发往用户 {} 的好友请求，记录ID: {}, 尝试次数: {}", 

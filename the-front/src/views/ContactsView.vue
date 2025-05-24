@@ -475,6 +475,20 @@ watch(() => stompClientInstance.isConnected.value, (connected) => {
   }
 });
 
+// 处理系统通知显示
+const handleSystemNotification = (notification) => {
+  console.log('[ContactsView] 收到系统通知:', notification);
+  
+  // 显示Element Plus通知
+  ElNotification({
+    title: notification.title || '系统通知',
+    message: notification.message || '您有新的通知',
+    type: notification.type || 'info',
+    duration: 5000,
+    position: 'top-right'
+  });
+};
+
 // 监听好友请求列表变化，如果正在查看好友通知，则更新通知面板内容
 watch(() => stompClientInstance.friendRequests.value, (newRequests) => {
   if (showNotifications.value && notificationType.value === 'friend') {
@@ -503,6 +517,14 @@ onMounted(() => {
     stompClientInstance.refreshGroups()
       .catch(error => console.error('初始刷新群组列表失败:', error));
   }
+  
+  // 监听系统通知事件
+  stompClientInstance.on('showSystemNotification', handleSystemNotification);
+});
+
+onUnmounted(() => {
+  // 移除系统通知事件监听
+  stompClientInstance.off('showSystemNotification', handleSystemNotification);
 });
 </script>
 

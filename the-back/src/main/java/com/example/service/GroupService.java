@@ -69,4 +69,36 @@ public interface GroupService {
      * @return 操作成功返回true，否则返回false
      */
     boolean leaveGroup(String groupId, int userId);
+
+    // ========== 群主管理功能 ==========
+    
+    /**
+     * 移除群组成员（踢出成员）
+     * @param groupId 群组ID
+     * @param memberId 要移除的成员ID
+     * @return 操作成功返回true，否则返回false
+     */
+    boolean removeMember(String groupId, int memberId);
+    
+    /**
+     * 更新群组名称
+     * @param groupId 群组ID
+     * @param newName 新的群组名称
+     * @return 操作成功返回true，否则返回false
+     */
+    boolean updateGroupName(String groupId, String newName);
+    
+    /**
+     * 解散群组
+     * @param groupId 群组ID
+     * @return 操作成功返回true，否则返回false
+     */
+    boolean dissolveGroup(String groupId);
+    
+    /**
+     * 获取群组的所有成员（用于解散群组时通知）
+     * @param groupId 群组ID
+     * @return 群组成员列表
+     */
+    List<Group_member> getAllGroupMembers(String groupId);
 }

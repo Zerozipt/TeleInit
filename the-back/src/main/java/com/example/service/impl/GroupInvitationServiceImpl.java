@@ -22,6 +22,8 @@ import org.springframework.transaction.annotation.Transactional;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
+import java.util.Map;
+import java.util.HashMap;
 
 @Service
 public class GroupInvitationServiceImpl implements GroupInvitationService {
@@ -119,6 +121,25 @@ public class GroupInvitationServiceImpl implements GroupInvitationService {
             return false;
         }
 
+        // 修复唯一约束冲突：如果接受邀请，先删除可能存在的同状态记录
+        if ("accepted".equals(action)) {
+            try {
+                // 删除该用户在该群组的所有accepted状态的邀请记录，避免唯一约束冲突
+                QueryWrapper<GroupInvitation> deleteQuery = new QueryWrapper<>();
+                deleteQuery.eq("group_id", invitation.getGroupId())
+                          .eq("invitee_id", invitation.getInviteeId())
+                          .eq("status", "accepted")
+                          .ne("id", invitationId); // 不删除当前记录
+                int deletedCount = groupInvitationMapper.delete(deleteQuery);
+                if (deletedCount > 0) {
+                    logger.info("清理冲突的accepted邀请记录: groupId={}, inviteeId={}, deletedCount={}", 
+                               invitation.getGroupId(), invitation.getInviteeId(), deletedCount);
+                }
+            } catch (Exception e) {
+                logger.warn("清理冲突邀请记录时发生错误，继续处理: {}", e.getMessage());
+            }
+        }
+
         // 更新邀请状态
         invitation.setStatus(action);
         invitation.setUpdatedAt(new Date());
@@ -133,8 +154,14 @@ public class GroupInvitationServiceImpl implements GroupInvitationService {
         if ("accepted".equals(action)) {
             try {
                 groupService.joinGroupById(invitation.getGroupId(), userId);
+                
                 // 通知邀请者
                 notifyInviterAboutResponse(invitation, "accepted");
+                
+                // 通知被邀请者（接受者）加入成功
+                notifyInviteeAboutJoinSuccess(invitation);
+                
+                logger.info("用户 {} 成功接受邀请并加入群组 {}", userId, invitation.getGroupId());
             } catch (Exception e) {
                 logger.error("加入群组失败: {}", e.getMessage(), e);
                 return false;
@@ -236,6 +263,38 @@ public class GroupInvitationServiceImpl implements GroupInvitationService {
             logger.info("已向用户 {} 发送邀请响应通知, 状态: {}", invitation.getInviterId(), action);
         } catch (Exception e) {
             logger.error("发送邀请响应通知失败: {}", e.getMessage(), e);
+        }
+    }
+
+    // 通知被邀请者（接受者）加入成功
+    private void notifyInviteeAboutJoinSuccess(GroupInvitation invitation) {
+        try {
+            // 获取群组信息
+            Group group = groupMapper.selectById(invitation.getGroupId());
+            
+            // 构建加入成功通知
+            Map<String, Object> joinSuccessNotification = new HashMap<>();
+            joinSuccessNotification.put("type", "groupInvite");
+            joinSuccessNotification.put("id", invitation.getId());
+            joinSuccessNotification.put("groupId", invitation.getGroupId());
+            joinSuccessNotification.put("groupName", group != null ? group.getName() : "未知群组");
+            joinSuccessNotification.put("inviterId", invitation.getInviterId());
+            joinSuccessNotification.put("inviteeId", invitation.getInviteeId());
+            joinSuccessNotification.put("status", "accepted");
+            joinSuccessNotification.put("createdAt", invitation.getCreatedAt());
+            joinSuccessNotification.put("message", "您已成功加入群组: " + (group != null ? group.getName() : "未知群组"));
+            
+            // 发送WebSocket通知到个人通知队列
+            messagingTemplate.convertAndSendToUser(
+                    String.valueOf(invitation.getInviteeId()),
+                    "/queue/notifications",
+                    joinSuccessNotification
+            );
+            
+            logger.info("已向用户 {} 发送群组加入成功通知, 群组: {}", 
+                       invitation.getInviteeId(), invitation.getGroupId());
+        } catch (Exception e) {
+            logger.error("发送群组加入成功通知失败: {}", e.getMessage(), e);
         }
     }
 } 

@@ -10,8 +10,10 @@ import jakarta.annotation.Resource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.scheduling.annotation.Scheduled;
 
 import java.util.List;
 import java.util.Map;
@@ -29,6 +31,9 @@ public class OutboxEventServiceImpl implements OutboxEventService {
     
     @Autowired
     private GroupCacheService groupCacheService;
+    
+    @Autowired
+    private SimpMessagingTemplate messagingTemplate;
     
     @Override
     @Transactional
@@ -151,6 +156,8 @@ public class OutboxEventServiceImpl implements OutboxEventService {
                 case OutboxEvent.EventTypes.GROUP_CREATED:
                 case OutboxEvent.EventTypes.GROUP_MEMBER_ADDED:
                 case OutboxEvent.EventTypes.GROUP_MEMBER_REMOVED:
+                case OutboxEvent.EventTypes.GROUP_NAME_CHANGED:
+                case OutboxEvent.EventTypes.GROUP_DISSOLVED:
                     handleGroupEvent(data);
                     break;
                     
@@ -180,17 +187,141 @@ public class OutboxEventServiceImpl implements OutboxEventService {
     private void handleGroupEvent(JSONObject data) {
         String groupId = data.getString("groupId");
         Integer userId = data.getInteger("userId");
+        Integer memberId = data.getInteger("memberId");
+        String action = data.getString("action");
         
+        // 失效缓存
         if (groupId != null) {
-            // 失效群组详情缓存
             groupCacheService.invalidateGroupDetail(groupId);
             logger.debug("群组缓存失效: groupId={}", groupId);
         }
         
         if (userId != null) {
-            // 失效用户群组列表缓存
             groupCacheService.invalidateUserGroups(userId);
             logger.debug("用户群组缓存失效: userId={}", userId);
+        }
+        
+        if (memberId != null) {
+            groupCacheService.invalidateUserGroups(memberId);
+            logger.debug("成员群组缓存失效: memberId={}", memberId);
+        }
+        
+        // 发送WebSocket通知
+        try {
+            switch (action) {
+                case "GROUP_MEMBER_REMOVED_BY_ADMIN":
+                    sendMemberRemovedNotification(data);
+                    break;
+                case "GROUP_NAME_CHANGED":
+                    sendGroupNameChangedNotification(data);
+                    break;
+                case "GROUP_DISSOLVED":
+                    sendGroupDissolvedNotification(data);
+                    break;
+                default:
+                    logger.debug("未处理的群组事件: action={}", action);
+            }
+        } catch (Exception e) {
+            logger.error("发送WebSocket通知失败: action={}, data={}", action, data.toJSONString(), e);
+        }
+    }
+    
+    /**
+     * 发送成员被移除通知
+     */
+    private void sendMemberRemovedNotification(JSONObject data) {
+        String groupId = data.getString("groupId");
+        Integer memberId = data.getInteger("memberId");
+        
+        if (groupId != null && memberId != null) {
+            // 通知被移除的用户
+            Map<String, Object> notification = Map.of(
+                "type", "GROUP_MEMBER_REMOVED",
+                "groupId", groupId,
+                "message", "您已被移出群组"
+            );
+            messagingTemplate.convertAndSendToUser(
+                String.valueOf(memberId), 
+                "/queue/notifications", 
+                notification
+            );
+            
+            // 通知群组内其他成员刷新群组信息
+            messagingTemplate.convertAndSend(
+                "/topic/group/" + groupId + "/events",
+                Map.of(
+                    "type", "MEMBER_REMOVED",
+                    "groupId", groupId,
+                    "removedMemberId", memberId
+                )
+            );
+            
+            logger.info("发送成员移除通知: groupId={}, memberId={}", groupId, memberId);
+        }
+    }
+    
+    /**
+     * 发送群名变更通知
+     */
+    private void sendGroupNameChangedNotification(JSONObject data) {
+        String groupId = data.getString("groupId");
+        String oldName = data.getString("oldName");
+        String newName = data.getString("newName");
+        
+        if (groupId != null && newName != null) {
+            // 通知群组内所有成员
+            messagingTemplate.convertAndSend(
+                "/topic/group/" + groupId + "/events",
+                Map.of(
+                    "type", "GROUP_NAME_CHANGED",
+                    "groupId", groupId,
+                    "oldName", oldName != null ? oldName : "",
+                    "newName", newName
+                )
+            );
+            
+            logger.info("发送群名变更通知: groupId={}, oldName={}, newName={}", groupId, oldName, newName);
+        }
+    }
+    
+    /**
+     * 发送群组解散通知
+     */
+    @SuppressWarnings("unchecked")
+    private void sendGroupDissolvedNotification(JSONObject data) {
+        String groupId = data.getString("groupId");
+        String groupName = data.getString("groupName");
+        Object allMembersObj = data.get("allMembers");
+        
+        if (groupId != null && allMembersObj != null) {
+            try {
+                // 解析成员列表
+                List<Map<String, Object>> allMembers = (List<Map<String, Object>>) allMembersObj;
+                
+                // 通知所有原群成员
+                for (Map<String, Object> member : allMembers) {
+                    Object userIdObj = member.get("userId");
+                    if (userIdObj != null) {
+                        Integer userId = (Integer) userIdObj;
+                        Map<String, Object> notification = Map.of(
+                            "type", "GROUP_DISSOLVED",
+                            "groupId", groupId,
+                            "groupName", groupName != null ? groupName : "未知群组",
+                            "message", "群组已被解散"
+                        );
+                        messagingTemplate.convertAndSendToUser(
+                            String.valueOf(userId),
+                            "/queue/notifications",
+                            notification
+                        );
+                    }
+                }
+                
+                logger.info("发送群组解散通知: groupId={}, groupName={}, memberCount={}", 
+                           groupId, groupName, allMembers.size());
+            } catch (Exception e) {
+                logger.error("解析群组成员列表失败: groupId={}, allMembersObj={}", groupId, allMembersObj, e);
+            }
         }
     }
     
@@ -224,5 +355,37 @@ public class OutboxEventServiceImpl implements OutboxEventService {
         // 好友事件可能需要清理相关缓存或发送通知
         // 这里可以根据具体需求扩展
         logger.debug("处理好友事件: {}", data.toJSONString());
+    }
+    
+    /**
+     * 定时处理待处理的事件
+     * 每5秒执行一次
+     */
+    @Scheduled(fixedDelay = 5000)
+    public void processOutboxEventsScheduled() {
+        try {
+            int processed = processPendingEvents(50);
+            if (processed > 0) {
+                logger.debug("定时处理事件完成: 处理数量={}", processed);
+            }
+        } catch (Exception e) {
+            logger.error("定时处理事件失败", e);
+        }
+    }
+    
+    /**
+     * 定时重试失败的事件
+     * 每30秒执行一次
+     */
+    @Scheduled(fixedDelay = 30000)
+    public void retryFailedEventsScheduled() {
+        try {
+            int retried = retryFailedEvents(3, 20);
+            if (retried > 0) {
+                logger.info("定时重试失败事件完成: 重试数量={}", retried);
+            }
+        } catch (Exception e) {
+            logger.error("定时重试失败事件失败", e);
+        }
     }
 } 

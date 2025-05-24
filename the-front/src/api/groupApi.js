@@ -302,3 +302,119 @@ export const exitGroup = async (groupId) => {
         throw new Error(msg);
     }
 };
+
+// ========== 群主管理功能API ==========
+
+/**
+ * 移除群组成员（踢出成员）
+ * @param {string} groupId 群组ID
+ * @param {number} memberId 要移除的成员ID
+ * @returns {Promise<boolean>} 操作是否成功
+ */
+export const removeMember = async (groupId, memberId) => {
+    if (!groupId || !memberId) {
+        ElMessage.warning('群组ID和成员ID不能为空');
+        return false;
+    }
+    
+    try {
+        const response = await apiClient.delete(`/groups/${groupId}/members/${memberId}`);
+        
+        if (response.data && response.data.code === 200) {
+            ElMessage.success('成功移除群成员');
+            // 刷新群组详情和群组列表
+            if (window.stompClientInstance) {
+                window.stompClientInstance.refreshGroups()
+                    .then(() => console.log('群组列表已刷新'))
+                    .catch(err => console.error('刷新群组列表失败:', err));
+            }
+            return true;
+        } else {
+            ElMessage.error(response.data?.message || '移除群成员失败');
+            return false;
+        }
+    } catch (error) {
+        console.error("移除群成员失败:", error);
+        const errorMsg = error.response?.data?.message || error.message || '移除群成员失败';
+        ElMessage.error(errorMsg);
+        return false;
+    }
+};
+
+/**
+ * 更新群组名称
+ * @param {string} groupId 群组ID
+ * @param {string} newName 新的群组名称
+ * @returns {Promise<boolean>} 操作是否成功
+ */
+export const updateGroupName = async (groupId, newName) => {
+    if (!groupId || !newName || !newName.trim()) {
+        ElMessage.warning('群组ID和新名称不能为空');
+        return false;
+    }
+    
+    try {
+        const response = await apiClient.put(`/groups/${groupId}/name`, {
+            name: newName.trim()
+        });
+        
+        if (response.data && response.data.code === 200) {
+            ElMessage.success('群组名称更新成功');
+            // 刷新群组详情和群组列表
+            if (window.stompClientInstance) {
+                window.stompClientInstance.refreshGroups()
+                    .then(() => console.log('群组列表已刷新'))
+                    .catch(err => console.error('刷新群组列表失败:', err));
+            }
+            return true;
+        } else {
+            ElMessage.error(response.data?.message || '群组名称更新失败');
+            return false;
+        }
+    } catch (error) {
+        console.error("更新群组名称失败:", error);
+        const errorMsg = error.response?.data?.message || error.message || '更新群组名称失败';
+        ElMessage.error(errorMsg);
+        return false;
+    }
+};
+
+/**
+ * 解散群组
+ * @param {string} groupId 群组ID
+ * @param {string} confirmText 确认文本（群组名称）
+ * @returns {Promise<boolean>} 操作是否成功
+ */
+export const dissolveGroup = async (groupId, confirmText) => {
+    if (!groupId || !confirmText || !confirmText.trim()) {
+        ElMessage.warning('群组ID和确认文本不能为空');
+        return false;
+    }
+    
+    try {
+        const response = await apiClient.delete(`/groups/${groupId}/dissolve`, {
+            data: {
+                confirmText: confirmText.trim()
+            }
+        });
+        
+        if (response.data && response.data.code === 200) {
+            ElMessage.success('群组已成功解散');
+            // 刷新群组列表
+            if (window.stompClientInstance) {
+                window.stompClientInstance.refreshGroups()
+                    .then(() => console.log('群组列表已刷新'))
+                    .catch(err => console.error('刷新群组列表失败:', err));
+            }
+            return true;
+        } else {
+            ElMessage.error(response.data?.message || '解散群组失败');
+            return false;
+        }
+    } catch (error) {
+        console.error("解散群组失败:", error);
+        const errorMsg = error.response?.data?.message || error.message || '解散群组失败';
+        ElMessage.error(errorMsg);
+        return false;
+    }
+};

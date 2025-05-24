@@ -63,6 +63,8 @@ public class OutboxEvent {
         public static final String GROUP_CREATED = "GROUP_CREATED";
         public static final String GROUP_MEMBER_ADDED = "GROUP_MEMBER_ADDED";
         public static final String GROUP_MEMBER_REMOVED = "GROUP_MEMBER_REMOVED";
+        public static final String GROUP_NAME_CHANGED = "GROUP_NAME_CHANGED";
+        public static final String GROUP_DISSOLVED = "GROUP_DISSOLVED";
         public static final String FRIEND_REQUEST_SENT = "FRIEND_REQUEST_SENT";
         public static final String FRIEND_REQUEST_ACCEPTED = "FRIEND_REQUEST_ACCEPTED";
         public static final String FRIEND_REQUEST_REJECTED = "FRIEND_REQUEST_REJECTED";

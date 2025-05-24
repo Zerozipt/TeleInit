@@ -234,6 +234,10 @@ const MESSAGE_STATUS = {
 const messageStatusMap = ref(new Map());
 // 待确认的消息队列
 const pendingMessages = ref(new Map());
+// 消息重试次数
+const messageRetryCount = ref(new Map());
+// 最大重试次数
+const MAX_MESSAGE_RETRY = 3;
 
 // 添加未读消息管理
 const unreadMessages = ref(new Map()); // 存储每个联系人/群组的未读消息数量
@@ -1112,37 +1116,20 @@ const handleInvite = async () => {
   }
 };
 
-// 更新消息状态的辅助函数
-const updateMessageStatus = (messageId, newStatus, realMessageId = null) => {
-  console.log(`[ChatView] 更新消息状态: ${messageId} -> ${newStatus}`);
-  
-  // 查找并更新消息状态
-  chatHistories.value.forEach((messages, key) => {
-    const messageIndex = messages.findIndex(msg => msg.id === messageId);
+// 更新消息状态
+const updateMessageStatus = (tempId, realId, status) => {
+  // 遍历所有聊天历史，更新消息状态
+  chatHistories.value.forEach((messages, conversationId) => {
+    const messageIndex = messages.findIndex(msg => msg.tempId === tempId);
     if (messageIndex !== -1) {
       const message = messages[messageIndex];
-      message.status = newStatus;
-      
-      // 如果提供了真实消息ID，则更新消息ID并建立映射
-      if (realMessageId && realMessageId !== messageId) {
-        message.id = realMessageId;
-        message.isOptimistic = false;
-        messageStatusMap.value.set(messageId, realMessageId);
+      message.status = status;
+      if (realId) {
+        message.id = realId;
       }
-      
-      // 触发响应式更新
-      chatHistories.value = new Map(chatHistories.value);
-      console.log(`[ChatView] 消息状态已更新: ${messageId} -> ${newStatus}`);
-      return true;
+      console.log(`[ChatView] 更新消息状态: ${tempId} -> ${status}`);
     }
   });
-  
-  // 如果消息确认成功，从待确认队列中移除
-  if (newStatus === MESSAGE_STATUS.SENT || newStatus === MESSAGE_STATUS.DELIVERED) {
-    pendingMessages.value.delete(messageId);
-  }
-  
-  return false;
 };
 
 // 处理消息确认
@@ -1150,111 +1137,67 @@ const handleMessageAck = (ackData) => {
   console.log('[ChatView] 收到消息确认:', ackData);
   
   if (ackData.success) {
-    updateMessageStatus(ackData.tempId, MESSAGE_STATUS.SENT, ackData.realId);
+    // 消息发送成功
+    const tempId = ackData.tempId;
+    const realId = ackData.messageId;
     
-    // 如果有真实消息ID，说明消息已成功保存到数据库
-    if (ackData.realId) {
-      console.log(`[ChatView] 消息已确认保存: ${ackData.tempId} -> ${ackData.realId}`);
-    }
+    // 更新本地消息状态
+    updateMessageStatus(tempId, realId, MESSAGE_STATUS.SENT);
+    
+    // 清理待确认记录
+    pendingMessages.value.delete(tempId);
+    messageRetryCount.value.delete(tempId);
+    
+    console.log(`[ChatView] 消息发送成功: ${tempId} -> ${realId}`);
   } else {
-    updateMessageStatus(ackData.tempId, MESSAGE_STATUS.FAILED);
-    ElMessage.error(`消息发送失败: ${ackData.error || '未知错误'}`);
+    // 消息发送失败
+    const tempId = ackData.tempId;
+    const errorMessage = ackData.error || '未知错误';
     
-    // 可以提供重试选项
-    const pendingMsg = pendingMessages.value.get(ackData.tempId);
-    if (pendingMsg && pendingMsg.retryCount < 3) {
+    console.error(`[ChatView] 消息发送失败: ${tempId}, 错误: ${errorMessage}`);
+    
+    // 检查是否需要重试
+    const retryCount = messageRetryCount.value.get(tempId) || 0;
+    if (retryCount < MAX_MESSAGE_RETRY) {
+      // 尝试重试
+      messageRetryCount.value.set(tempId, retryCount + 1);
       setTimeout(() => {
-        offerRetry(ackData.tempId);
-      }, 2000);
+        retryMessage(tempId);
+      }, (retryCount + 1) * 2000); // 递增延迟重试
+    } else {
+      // 超过重试次数，标记为失败
+      updateMessageStatus(tempId, null, MESSAGE_STATUS.FAILED);
+      pendingMessages.value.delete(tempId);
+      messageRetryCount.value.delete(tempId);
+      
+      ElMessage.error(`消息发送失败: ${errorMessage}`);
     }
   }
 };
 
-// 提供重试机制
-const offerRetry = (messageId) => {
-  const pendingMsg = pendingMessages.value.get(messageId);
-  if (!pendingMsg) return;
-  
-  ElMessage({
-    message: '消息发送失败，是否重试？',
-    type: 'warning',
-    showClose: true,
-    duration: 0,
-    customClass: 'retry-message',
-    dangerouslyUseHTMLString: true,
-    message: `
-      <div>
-        <p>消息发送失败，是否重试？</p>
-        <p style="margin-top: 8px;">
-          <button onclick="window.retryMessage('${messageId}')" style="margin-right: 8px; padding: 4px 8px; background: #409EFF; color: white; border: none; border-radius: 4px; cursor: pointer;">重试</button>
-          <button onclick="window.cancelMessage('${messageId}')" style="padding: 4px 8px; background: #F56C6C; color: white; border: none; border-radius: 4px; cursor: pointer;">取消</button>
-        </p>
-      </div>
-    `
-  });
-  
-  // 提供全局重试函数
-  window.retryMessage = (msgId) => {
-    retryFailedMessage(msgId);
-    ElMessage.closeAll();
-  };
-  
-  window.cancelMessage = (msgId) => {
-    pendingMessages.value.delete(msgId);
-    updateMessageStatus(msgId, MESSAGE_STATUS.FAILED);
-    ElMessage.closeAll();
-  };
-};
-
-// 重试失败的消息
-const retryFailedMessage = (messageId) => {
-  const pendingMsg = pendingMessages.value.get(messageId);
-  if (!pendingMsg) {
-    console.warn('[ChatView] 找不到待重试的消息:', messageId);
+// 重试消息发送
+const retryMessage = (tempId) => {
+  const messageData = pendingMessages.value.get(tempId);
+  if (!messageData) {
+    console.warn('[ChatView] 重试消息失败: 找不到消息数据', tempId);
     return;
   }
   
-  pendingMsg.retryCount++;
-  updateMessageStatus(messageId, MESSAGE_STATUS.SENDING);
+  console.log(`[ChatView] 重试发送消息: ${tempId}`);
   
-  console.log(`[ChatView] 重试发送消息 (第${pendingMsg.retryCount}次):`, messageId);
-  
-  try {
-    const { message, type, targetId, receiverName } = pendingMsg;
-    
-    if (type === 'group') {
-      if (message.fileUrl) {
-        stompClientInstance.sendPublicMessage(message.content, targetId, message);
-      } else {
-        stompClientInstance.sendPublicMessage(message.content, targetId);
-      }
-    } else if (type === 'private') {
-      if (message.fileUrl) {
-        stompClientInstance.sendPrivateMessage(targetId, message.content, receiverName, message);
-      } else {
-        stompClientInstance.sendPrivateMessage(targetId, message.content, receiverName);
-      }
-    }
-    
-    // 重新设置超时
-    setTimeout(() => {
-      if (pendingMessages.value.has(messageId)) {
-        updateMessageStatus(messageId, MESSAGE_STATUS.FAILED);
-        if (pendingMsg.retryCount < 3) {
-          offerRetry(messageId);
-        } else {
-          ElMessage.error('消息发送失败，已达最大重试次数');
-          pendingMessages.value.delete(messageId);
-        }
-      }
-    }, 10000);
-    
-  } catch (error) {
-    console.error('[ChatView] 重试发送消息失败:', error);
-    updateMessageStatus(messageId, MESSAGE_STATUS.FAILED);
-    if (pendingMsg.retryCount < 3) {
-      setTimeout(() => offerRetry(messageId), 2000);
-    }
+  if (messageData.type === 'group') {
+    stompClientInstance.sendPublicMessage(
+      messageData.content, 
+      messageData.groupId, 
+      messageData.fileData
+    );
+  } else if (messageData.type === 'private') {
+    stompClientInstance.sendPrivateMessage(
+      messageData.receiverId, 
+      messageData.content, 
+      messageData.receiverName, 
+      messageData.fileData
+    );
   }
 };
 </script>

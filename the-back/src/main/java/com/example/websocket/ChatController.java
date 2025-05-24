@@ -83,7 +83,7 @@ public class ChatController {
 
     // 修改方法签名，接受 Object (或 ChatMessage)
     public void sendMessageToGroup(String groupId, Object messagePayload) {
-        String destination = "/topic/channel/" + groupId;
+        String destination = "/topic/group/" + groupId; // 修复: 统一使用 /topic/group/ 路径
         // 使用 JSON.toJSONString 打印，避免直接 toString 可能不清晰
         System.out.println("发送消息到群组: " + destination + ", 消息内容: " + JSON.toJSONString(messagePayload));
         // 发送完整的对象，SimpMessagingTemplate 会自动处理 JSON 转换
@@ -237,41 +237,22 @@ public class ChatController {
             return;
         }
         
-        // 异步持久化和 Redis 操作由 PrivateChatMessageListener 及 savePrivateMessage 处理
+        // 检查文件消息类型
+        if (message.getFileUrl() != null && !message.getFileUrl().isEmpty() && message.getMessageType() == null) {
+            message.setMessageType("FILE");
+        }
+        
+        // 异步持久化和 Redis 操作由 PrivateChatMessageListener 处理
         rabbitTemplate.convertAndSend("privateChat", message);
         
-        // 实时推送给接收者
+        // 只向接收者发送实时消息
         messagingTemplate.convertAndSendToUser(
             message.getReceiverId().toString(),
             "/queue/private",
             message
         );
         
-        // 新增：对于文件消息，也推送给发送者自己以便在UI上显示
-        // 检查是否是文件消息
-        boolean isFileMessage = false;
-        if (message.getMessageType() != null && 
-           (message.getMessageType().equalsIgnoreCase("FILE") || 
-            message.getMessageType().equalsIgnoreCase("IMAGE") || 
-            message.getMessageType().equalsIgnoreCase("VIDEO") || 
-            message.getMessageType().equalsIgnoreCase("AUDIO"))) {
-            isFileMessage = true;
-        } else if (message.getFileUrl() != null && !message.getFileUrl().isEmpty()) {
-            isFileMessage = true;
-            // 如果没有指定消息类型但有文件URL，默认设为FILE类型
-            if (message.getMessageType() == null) {
-                message.setMessageType("FILE");
-            }
-        }
-        
-        // 文件消息或者普通消息都要发给自己
-        messagingTemplate.convertAndSendToUser(
-            principal.getName(),
-            "/queue/private",
-            message
-        );
-        
-        System.out.println("发送" + (isFileMessage ? "文件" : "文本") + "消息: " + message);
+        System.out.println("发送私聊消息给接收者: " + message.getReceiverId());
     }
 
     // 处理心跳包

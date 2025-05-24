@@ -11,7 +11,7 @@
  Target Server Version : 80404 (8.4.4)
  File Encoding         : 65001
 
- Date: 24/05/2025 01:40:29
+ Date: 24/05/2025 16:03:31
 */
 
 SET NAMES utf8mb4;
@@ -69,7 +69,7 @@ CREATE TABLE `friends`  (
   UNIQUE INDEX `uk_friend_request`(`the_first_user_id` ASC, `the_second_user_id` ASC, `STATUS` ASC) USING BTREE,
   INDEX `idx_friends_status`(`STATUS` ASC, `created_at` ASC) USING BTREE,
   INDEX `idx_friends_user_pair`(`the_first_user_id` ASC, `the_second_user_id` ASC) USING BTREE
-) ENGINE = InnoDB AUTO_INCREMENT = 17 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci ROW_FORMAT = DYNAMIC;
+) ENGINE = InnoDB AUTO_INCREMENT = 18 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci ROW_FORMAT = DYNAMIC;
 
 -- ----------------------------
 -- Table structure for group
@@ -83,7 +83,7 @@ CREATE TABLE `group`  (
   `version` int NULL DEFAULT 0 COMMENT '乐观锁版本号',
   PRIMARY KEY (`group_id`) USING BTREE,
   INDEX `idx_creator`(`creator_id` ASC) USING BTREE COMMENT '创建者索引',
-  UNIQUE INDEX `uk_group_name`(`name` ASC) USING BTREE
+  INDEX `idx_group_name`(`name` ASC) USING BTREE
 ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_unicode_ci COMMENT = '群组信息表' ROW_FORMAT = DYNAMIC;
 
 -- ----------------------------
@@ -104,7 +104,7 @@ CREATE TABLE `group_invitations`  (
   INDEX `idx_group_inviter`(`group_id` ASC, `inviter_id` ASC) USING BTREE,
   UNIQUE INDEX `uk_group_invitation`(`group_id` ASC, `inviter_id` ASC, `invitee_id` ASC, `status` ASC) USING BTREE,
   INDEX `idx_group_invitations_status`(`status` ASC, `created_at` ASC) USING BTREE
-) ENGINE = InnoDB AUTO_INCREMENT = 8 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = '群组邀请表' ROW_FORMAT = DYNAMIC;
+) ENGINE = InnoDB AUTO_INCREMENT = 13 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = '群组邀请表' ROW_FORMAT = DYNAMIC;
 
 -- ----------------------------
 -- Table structure for group_members
@@ -163,7 +163,7 @@ CREATE TABLE `outbox_events`  (
   PRIMARY KEY (`id`) USING BTREE,
   INDEX `idx_status_created`(`status` ASC, `created_at` ASC) USING BTREE,
   INDEX `idx_entity_type`(`entity_id` ASC, `event_type` ASC) USING BTREE
-) ENGINE = InnoDB AUTO_INCREMENT = 1 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci ROW_FORMAT = Dynamic;
+) ENGINE = InnoDB AUTO_INCREMENT = 10 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------
 -- Table structure for private_messages

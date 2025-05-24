@@ -22,6 +22,7 @@ import java.util.Map;
 import com.example.utils.JwtUtils;
 import com.example.entity.RestBean;
 import java.util.List;
+import com.example.utils.GroupPermissionHelper;
 
 @RestController
 @RequestMapping("/api/groups")
@@ -38,6 +39,8 @@ public class GroupController {
     @Resource // 2. 注入 AccountService (使用接口)
     AccountService accountService; // 假设 AccountService 有 findAccountIdByUsername 方法
 
+    @Resource
+    GroupPermissionHelper groupPermissionHelper;
 
     // --- 创建群聊的请求体 DTO ---
     @Getter
@@ -306,6 +309,169 @@ public class GroupController {
             }
         } catch (Exception e) {
             return RestBean.failure(500, "退出群组异常: " + e.getMessage());
+        }
+    }
+
+    // ========== 群主管理功能API ==========
+
+    /**
+     * 移除群组成员（踢出成员）
+     * @param groupId 群组ID
+     * @param memberId 要移除的成员ID
+     * @param authorization JWT令牌
+     * @return 操作结果
+     */
+    @DeleteMapping("/{groupId}/members/{memberId}")
+    public RestBean<Boolean> removeMember(
+            @PathVariable String groupId,
+            @PathVariable int memberId,
+            @RequestHeader(value = "Authorization", required = false) String authorization) {
+        try {
+            if (authorization == null || !authorization.startsWith("Bearer ")) {
+                return RestBean.failure(401, "未提供JWT令牌");
+            }
+            
+            String jwt = authorization.substring(7);
+            DecodedJWT decodedJWT = jwtUtils.resolveJWTFromLocalStorage(jwt);
+            int operatorId = Integer.parseInt(decodedJWT.getClaim("id").asString());
+            
+            log.info("群主尝试移除成员: operatorId={}, groupId={}, memberId={}", operatorId, groupId, memberId);
+            
+            // 验证操作者权限
+            if (!groupPermissionHelper.canManageMembers(groupId, operatorId)) {
+                log.warn("用户无权限移除群成员: operatorId={}, groupId={}", operatorId, groupId);
+                return RestBean.failure(403, "只有群主可以移除群成员");
+            }
+            
+            // 验证操作目标有效性
+            if (!groupPermissionHelper.isValidTarget(operatorId, memberId)) {
+                log.warn("无效的移除操作: operatorId={}, memberId={}", operatorId, memberId);
+                return RestBean.failure(400, "不能移除自己或目标用户无效");
+            }
+            
+            // 执行移除操作
+            boolean result = groupService.removeMember(groupId, memberId);
+            if (result) {
+                log.info("群成员移除成功: operatorId={}, groupId={}, memberId={}", operatorId, groupId, memberId);
+                return RestBean.success(true);
+            } else {
+                log.warn("群成员移除失败: operatorId={}, groupId={}, memberId={}", operatorId, groupId, memberId);
+                return RestBean.failure(500, "移除群成员失败");
+            }
+        } catch (Exception e) {
+            log.error("移除群成员异常: groupId={}, memberId={}", groupId, memberId, e);
+            return RestBean.failure(500, "移除群成员异常: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 更新群组名称
+     * @param groupId 群组ID
+     * @param request 包含新名称的请求体
+     * @param authorization JWT令牌
+     * @return 操作结果
+     */
+    @PutMapping("/{groupId}/name")
+    public RestBean<Boolean> updateGroupName(
+            @PathVariable String groupId,
+            @RequestBody Map<String, String> request,
+            @RequestHeader(value = "Authorization", required = false) String authorization) {
+        try {
+            if (authorization == null || !authorization.startsWith("Bearer ")) {
+                return RestBean.failure(401, "未提供JWT令牌");
+            }
+            
+            String jwt = authorization.substring(7);
+            DecodedJWT decodedJWT = jwtUtils.resolveJWTFromLocalStorage(jwt);
+            int operatorId = Integer.parseInt(decodedJWT.getClaim("id").asString());
+            
+            String newName = request.get("name");
+            if (newName == null || newName.trim().isEmpty()) {
+                return RestBean.failure(400, "群组名称不能为空");
+            }
+            
+            log.info("群主尝试修改群名: operatorId={}, groupId={}, newName={}", operatorId, groupId, newName);
+            
+            // 验证操作者权限
+            if (!groupPermissionHelper.canModifyGroupInfo(groupId, operatorId)) {
+                log.warn("用户无权限修改群组信息: operatorId={}, groupId={}", operatorId, groupId);
+                return RestBean.failure(403, "只有群主可以修改群组名称");
+            }
+            
+            // 执行更新操作
+            boolean result = groupService.updateGroupName(groupId, newName.trim());
+            if (result) {
+                log.info("群组名称更新成功: operatorId={}, groupId={}, newName={}", operatorId, groupId, newName);
+                return RestBean.success(true);
+            } else {
+                log.warn("群组名称更新失败: operatorId={}, groupId={}, newName={}", operatorId, groupId, newName);
+                return RestBean.failure(500, "群组名称更新失败，可能该名称已被使用");
+            }
+        } catch (Exception e) {
+            log.error("更新群组名称异常: groupId={}, request={}", groupId, request, e);
+            return RestBean.failure(500, "更新群组名称异常: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 解散群组
+     * @param groupId 群组ID
+     * @param request 包含确认信息的请求体
+     * @param authorization JWT令牌
+     * @return 操作结果
+     */
+    @DeleteMapping("/{groupId}/dissolve")
+    public RestBean<Boolean> dissolveGroup(
+            @PathVariable String groupId,
+            @RequestBody Map<String, String> request,
+            @RequestHeader(value = "Authorization", required = false) String authorization) {
+        try {
+            if (authorization == null || !authorization.startsWith("Bearer ")) {
+                return RestBean.failure(401, "未提供JWT令牌");
+            }
+            
+            String jwt = authorization.substring(7);
+            DecodedJWT decodedJWT = jwtUtils.resolveJWTFromLocalStorage(jwt);
+            int operatorId = Integer.parseInt(decodedJWT.getClaim("id").asString());
+            
+            String confirmText = request.get("confirmText");
+            if (confirmText == null || confirmText.trim().isEmpty()) {
+                return RestBean.failure(400, "请提供确认文本");
+            }
+            
+            log.info("群主尝试解散群组: operatorId={}, groupId={}, confirmText={}", operatorId, groupId, confirmText);
+            
+            // 验证操作者权限
+            if (!groupPermissionHelper.canModifyGroupInfo(groupId, operatorId)) {
+                log.warn("用户无权限解散群组: operatorId={}, groupId={}", operatorId, groupId);
+                return RestBean.failure(403, "只有群主可以解散群组");
+            }
+            
+            // 获取群组信息验证确认文本
+            GroupDetailResponse groupDetail = groupService.getGroupDetail(groupId);
+            if (groupDetail == null) {
+                return RestBean.failure(404, "群组不存在");
+            }
+            
+            if (!confirmText.trim().equals(groupDetail.getName())) {
+                log.warn("解散群组确认文本错误: operatorId={}, groupId={}, expected={}, actual={}", 
+                        operatorId, groupId, groupDetail.getName(), confirmText);
+                return RestBean.failure(400, "确认文本不正确，请输入群组名称");
+            }
+            
+            // 执行解散操作
+            boolean result = groupService.dissolveGroup(groupId);
+            if (result) {
+                log.info("群组解散成功: operatorId={}, groupId={}, groupName={}", 
+                        operatorId, groupId, groupDetail.getName());
+                return RestBean.success(true);
+            } else {
+                log.warn("群组解散失败: operatorId={}, groupId={}", operatorId, groupId);
+                return RestBean.failure(500, "群组解散失败");
+            }
+        } catch (Exception e) {
+            log.error("解散群组异常: groupId={}, request={}", groupId, request, e);
+            return RestBean.failure(500, "解散群组异常: " + e.getMessage());
         }
     }
 }

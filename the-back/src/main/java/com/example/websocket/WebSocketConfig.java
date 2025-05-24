@@ -25,6 +25,8 @@ import java.util.Collections;
 import org.springframework.messaging.MessageChannel;
 import com.auth0.jwt.interfaces.DecodedJWT;
 import com.example.entity.vo.request.CustomPrincipal;
+import org.springframework.scheduling.TaskScheduler;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 
 @Configuration
 @EnableWebSocketMessageBroker
@@ -77,10 +79,14 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
     @Override
     public void configureMessageBroker(@NonNull MessageBrokerRegistry registry) {
-        // 客户端订阅地址的前缀
-        registry.enableSimpleBroker("/topic", "/queue");
-        // 客户端发送消息地址的前缀,意思是当客户端发送消息时，消息可以指定发送到/app路径和/system路径
+        // 启用简单消息代理
+        registry.enableSimpleBroker("/topic", "/queue")
+                .setHeartbeatValue(new long[]{10000, 10000}) // 10秒心跳间隔
+                .setTaskScheduler(taskScheduler()); // 设置任务调度器
+        
+        // 客户端发送消息地址的前缀
         registry.setApplicationDestinationPrefixes("/app","/system");
+        
         // 点对点消息前缀
         registry.setUserDestinationPrefix("/user");
     }
@@ -128,6 +134,15 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
         return (org.springframework.messaging.simp.SimpMessagingTemplate) brokerMessagingTemplate;
     }
 
+    @Bean
+    public TaskScheduler taskScheduler() {
+        ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
+        scheduler.setPoolSize(10);
+        scheduler.setThreadNamePrefix("websocket-heartbeat-");
+        scheduler.setWaitForTasksToCompleteOnShutdown(true);
+        scheduler.setAwaitTerminationSeconds(60);
+        return scheduler;
+    }
 
 }
 // ... existing code ...

@@ -56,9 +56,11 @@ class StompClientWrapper {
         this.resolveConnectionPromise = null;
         this.rejectConnectionPromise = null;
         this.subscriptions = {}; // 存储订阅，键为 destination，值为 STOMP subscription 对象
-        this.heartbeatInterval = 10000; // 心跳间隔,单位为毫秒
+        this.heartbeatInterval = 10000; // 修复: 心跳间隔改为10秒，与后端保持一致
         this.heartbeatTimer = null; // 心跳定时器
         this.reconnectInterval = 5000; // 重连间隔,单位为毫秒
+        this.reconnectAttempts = 0; // 重连尝试次数
+        this.maxReconnectAttempts = 5; // 最大重连次数
         this.friends = ref([]);
         this.friendRequests = ref([]);
         this.groups = ref([]);
@@ -69,6 +71,8 @@ class StompClientWrapper {
         this.groupMessages = ref(new Map());
         //私聊消息的结构是一维数组，数组中存储的是PrivateChatMessage对象
         this.privateMessages = ref([]); 
+        // 临时ID生成器（更可靠）
+        this.messageSequence = 0;
         // 回调注册表
         // 注册表的实际含义是：当某个事件发生时，调用_trigger方法，触发事件，而被调用者是回调函数
         // 在此处，表现为触发事件时，将"事件"存储到注册表中，而"事件"的回调函数是注册表中的回调函数
@@ -83,7 +87,11 @@ class StompClientWrapper {
             friendRequestsUpdated: [],
             onGroupInvitationsUpdated: [], // 新增群组邀请更新事件
             showSystemNotification: [],
-            onMessageAck: [] // 新增消息确认事件
+            onMessageAck: [], // 新增消息确认事件
+            // 新增群组事件回调类型
+            onGroupMemberChanged: [], // 群组成员变化事件
+            onGroupInfoChanged: [], // 群组信息变化事件
+            onGroupDissolved: [] // 群组解散事件
         };
         // 添加这里 - 页面关闭事件监听
     if (typeof window !== 'undefined') {
@@ -96,21 +104,61 @@ class StompClientWrapper {
         // 监听网络状态变化
         window.addEventListener('offline', () => {
             console.log('[StompClientWrapper] 网络连接断开');
-            // 网络断开时，触发清理但不主动断开连接
-            // Stomp客户端会自行处理网络中断
             this._trigger('onError', '网络连接已断开');
         });
         
         window.addEventListener('online', () => {
             console.log('[StompClientWrapper] 网络连接恢复');
-            // 网络恢复时，检查连接状态
+            // 网络恢复时，检查连接状态并尝试重连
             if (!this.isConnected.value && !this.stompClient.value?.connected) {
                 console.log('[StompClientWrapper] 尝试重新连接');
-                // 可以尝试重新连接，或者通知用户手动重连
-                this._trigger('onError', '网络已恢复，请刷新页面重新连接');
+                this.attemptReconnect();
             }
         });
         }
+    }
+    
+    /**
+     * 生成更可靠的临时消息ID
+     */
+    generateTempId() {
+        this.messageSequence++;
+        const timestamp = Date.now();
+        const sequence = this.messageSequence.toString().padStart(6, '0');
+        const random = Math.random().toString(36).substr(2, 6);
+        return `temp_${timestamp}_${sequence}_${random}`;
+    }
+    
+    /**
+     * 尝试重新连接
+     */
+    attemptReconnect() {
+        if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+            console.error('[StompClientWrapper] 已达到最大重连次数，停止重连');
+            this._trigger('onError', '连接已断开，请刷新页面重新连接');
+            return;
+        }
+        
+        this.reconnectAttempts++;
+        console.log(`[StompClientWrapper] 尝试第 ${this.reconnectAttempts} 次重连...`);
+        
+        setTimeout(() => {
+            const jwt = this.getStoredJwt();
+            if (jwt) {
+                this.connect(jwt).catch(error => {
+                    console.error('[StompClientWrapper] 重连失败:', error);
+                    this.attemptReconnect();
+                });
+            }
+        }, this.reconnectInterval * this.reconnectAttempts); // 递增延迟
+    }
+    
+    /**
+     * 获取存储的JWT（需要根据实际存储方式实现）
+     */
+    getStoredJwt() {
+        // 这里需要根据实际的JWT存储方式来实现
+        return localStorage.getItem('jwt') || sessionStorage.getItem('jwt');
     }
 
     // 刷新群组列表
@@ -443,8 +491,8 @@ class StompClientWrapper {
                 connectHeaders: {
                     token: jwt
                 },
-                heartbeatIncoming: 5000,
-                heartbeatOutgoing: 5000,
+                heartbeatIncoming: 10000, // 10秒心跳间隔，与后端一致
+                heartbeatOutgoing: 10000, // 10秒心跳间隔，与后端一致
                 reconnectDelay: 5000,
             });
     
@@ -460,7 +508,7 @@ class StompClientWrapper {
             this.stompClient.value.connect(  
                 {
                     token: jwt,
-                    'heart-beat': '5000,5000'
+                    'heart-beat': '10000,10000' // 与后端一致的10秒心跳
                 },
                 //修改连接逻辑，连接成功后，向后端发送get请求，获取用户信息
                 (frame) => {
@@ -579,42 +627,57 @@ class StompClientWrapper {
 
     // --- 订阅 ---
     _subscribeToPublic() {
-        //由于用户可能有很多群组，所以需要批量订阅
-        this.groups.value.forEach(groupId => {
-            const destination = '/topic/channel/' + groupId.groupId;
-            console.log('[StompClientWrapper] 正在订阅群组消息频道:', destination);
+        // 清理已失效的订阅
+        Object.keys(this.subscriptions).forEach(dest => {
+            if (dest.startsWith('/topic/group/')) {
+                const groupId = dest.replace('/topic/group/', '');
+                const groupExists = this.groups.value.some(group => group.groupId === groupId);
+                if (!groupExists) {
+                    console.log('[StompClientWrapper] 清理无效群组订阅:', dest);
+                    this.subscriptions[dest]?.unsubscribe();
+                    delete this.subscriptions[dest];
+                }
+            }
+        });
+        
+        // 为当前群组订阅消息频道
+        this.groups.value.forEach(group => {
+            const destination = '/topic/group/' + group.groupId; // 修复: 统一路径格式
+            console.log('[StompClientWrapper] 检查群组订阅:', destination);
+            
             // 如果订阅不存在，并且连接成功，则订阅
             if (!this.subscriptions[destination] && this.stompClient.value?.connected) {
                 try {
-                // 订阅
-                console.log('[StompClientWrapper] 正在订阅群组消息频道:', destination);
-                 this.subscriptions[destination] = this.stompClient.value.subscribe(destination, (message) => {
-                    try {
-                        // 不再需要从 header 读取 groupId
-                        // const messageGroupId = message.headers['groupId'];
-                        // if (messageGroupId === groupId) { // groupId 在这里是 Group_member 对象
-                        const parsedMessage = JSON.parse(message.body); // message.body 现在是 ChatMessage 的 JSON 字符串
-                        // 验证收到的消息中的 groupId 是否与当前订阅的群组匹配
-                        if (parsedMessage.groupId === groupId.groupId) { // 使用 groupId 对象的 groupId 属性
-                            // 使用 ISO 格式或根据需要格式化时间戳
-                            // parsedMessage.timestamp = new Date(parsedMessage.timestamp).toLocaleString();
-                            console.log('[StompClientWrapper] Received public message for correct group:', parsedMessage);
-                            // 触发事件，通知前端收到消息
+                    console.log('[StompClientWrapper] 正在订阅群组消息频道:', destination);
+                    this.subscriptions[destination] = this.stompClient.value.subscribe(destination, (message) => {
+                        try {
+                            const parsedMessage = JSON.parse(message.body);
+                            console.log('[StompClientWrapper] 收到群组消息:', parsedMessage);
+                            
+                            // 确保消息包含必要字段
+                            if (!parsedMessage.senderId || !parsedMessage.content) {
+                                console.warn('[StompClientWrapper] 群组消息缺少必要字段:', parsedMessage);
+                                return;
+                            }
+                            
+                            // 触发群组消息事件
                             this._trigger('onPublicMessage', parsedMessage);
-                        } else {
-                            console.warn('[StompClientWrapper] Received public message for wrong group:', parsedMessage, 'Expected group:', groupId.groupId);
+                        } catch (e) {
+                            console.error('[StompClientWrapper] 解析群组消息失败:', e, message.body);
                         }
-                        // }
-                    } catch (e) {
-                        console.error('[StompClientWrapper] Error parsing public message:', e, message.body);
-                    }
-                });
-                console.log(`[StompClientWrapper] Subscribed to ${destination}`);
-            } catch(e) {
-                console.error(`[StompClientWrapper] Failed to subscribe to ${destination}:`, e);
-                 this._trigger('onError', `Failed to subscribe to public channel: ${e.message}`);
+                    });
+                    
+                    console.log(`[StompClientWrapper] 成功订阅群组频道: ${destination}`);
+                } catch(e) {
+                    console.error(`[StompClientWrapper] 订阅群组频道失败: ${destination}`, e);
+                    this._trigger('onError', `订阅群组频道失败: ${e.message}`);
+                }
+            } else if (this.subscriptions[destination]) {
+                console.log(`[StompClientWrapper] 群组频道已订阅: ${destination}`);
+            } else {
+                console.warn(`[StompClientWrapper] 无法订阅群组频道，STOMP客户端未连接: ${destination}`);
             }
-        }});
+        });
     }
     
     _subscribeOnlineStatus() {
@@ -747,6 +810,39 @@ class StompClientWrapper {
             console.log(`[StompClientWrapper] 已经订阅了 ${destination}，无需重复订阅`);
         } else {
             console.warn(`[StompClientWrapper] 无法订阅 ${destination}，STOMP客户端未连接`);
+        }
+        
+        // 添加个人通知频道订阅 - 用于群聊管理通知
+        const notificationDestination = '/user/queue/notifications';
+        if (!this.subscriptions[notificationDestination] && this.stompClient.value?.connected) {
+            try {
+                console.log(`[StompClientWrapper] 正在订阅个人通知频道 ${notificationDestination}`);
+                
+                this.subscriptions[notificationDestination] = this.stompClient.value.subscribe(notificationDestination, (message) => {
+                    try {
+                        console.log('[StompClientWrapper] 收到个人通知:', message);
+                        const parsedMessage = JSON.parse(message.body);
+                        console.log('[StompClientWrapper] 解析后的个人通知:', parsedMessage);
+                        
+                        // 处理群组管理通知
+                        this._handleGroupNotification(parsedMessage);
+                        
+                        // 触发通知事件
+                        this._trigger('showSystemNotification', {
+                            title: this._getNotificationTitle(parsedMessage.type),
+                            message: parsedMessage.message || '您有新的通知',
+                            type: this._getNotificationType(parsedMessage.type)
+                        });
+                    } catch (e) {
+                        console.error('[StompClientWrapper] 解析个人通知出错:', e, message.body);
+                    }
+                });
+                
+                console.log(`[StompClientWrapper] 已成功订阅个人通知频道 ${notificationDestination}`);
+            } catch(e) {
+                console.error(`[StompClientWrapper] 订阅 ${notificationDestination} 失败:`, e);
+                this._trigger('onError', `订阅个人通知频道失败: ${e.message}`);
+            }
         }
         
         // 添加消息确认队列订阅
@@ -1175,19 +1271,50 @@ class StompClientWrapper {
                 }
             }
             
-            // 标准化状态值处理逻辑
-            let status = (message.status?.toLowerCase?.() || '').trim();
+            // 检查消息状态，判断是新邀请还是邀请状态更新
+            const status = (message.status?.toLowerCase?.() || '').trim();
             
-            // 标准化为前端期望的三种状态
+            // 如果是邀请被接受的通知，触发群组列表刷新
+            if (status === 'accepted' || status === 'joined') {
+                console.log('[StompClientWrapper] 群组邀请已被接受，刷新群组列表');
+                
+                // 立即刷新群组列表
+                this.refreshGroups()
+                    .then(() => {
+                        console.log('[StompClientWrapper] 因群组邀请接受，群组列表已刷新');
+                        // 显示成功通知
+                        const groupName = message.groupName || '群组';
+                        this._trigger('showSystemNotification', {
+                            title: '加入群组',
+                            message: `您已成功加入群聊 ${groupName}`,
+                            type: 'success'
+                        });
+                    })
+                    .catch(error => {
+                        console.error('[StompClientWrapper] 刷新群组列表失败:', error);
+                    });
+                
+                // 同时刷新群组邀请列表
+                this.refreshGroupInvitations()
+                    .then(invitations => {
+                        console.log('[StompClientWrapper] 群组邀请列表已刷新:', invitations);
+                        this._trigger('onGroupInvitationsUpdated', invitations);
+                    })
+                    .catch(error => {
+                        console.error('[StompClientWrapper] 刷新群组邀请列表失败:', error);
+                    });
+                
+                return; // 处理完成，直接返回
+            }
+            
+            // 标准化状态值处理逻辑（对于新邀请）
+            let normalizedStatus = 'pending';
             if (status === '' || status === 'pending' || status === 'requested') {
-                status = 'pending';
+                normalizedStatus = 'pending';
             } else if (status === 'accepted' || status === 'joined') {
-                status = 'accepted';
+                normalizedStatus = 'accepted';
             } else if (status === 'rejected' || status === 'declined' || status === 'refused' || status === 'denied') {
-                status = 'rejected';
-            } else {
-                // 默认为待处理状态
-                status = 'pending';
+                normalizedStatus = 'rejected';
             }
             
             // 直接将消息添加到临时群组邀请列表中
@@ -1199,7 +1326,7 @@ class StompClientWrapper {
                 inviterId: message.inviterId,
                 inviterName: message.inviterName || '未知用户',
                 inviteeId: this.currentUserId.value,
-                status: status, // 使用标准化后的状态
+                status: normalizedStatus,
                 createdAt: message.createdAt || new Date().toISOString()
             };
             
@@ -1228,16 +1355,18 @@ class StompClientWrapper {
                     this._trigger('onGroupInvitationsUpdated', this.groupInvitations.value);
                 });
             
-            // 通知用户
-            const inviterName = message.inviterName || ('用户' + message.inviterId);
-            const groupName = message.groupName || ('群组' + message.groupId);
-            const notificationMessage = `${inviterName} 邀请您加入群聊 ${groupName}`;
-            
-            this._trigger('showSystemNotification', { 
-                title: '新群聊邀请', 
-                message: notificationMessage, 
-                type: 'info' 
-            });
+            // 通知用户（仅对新邀请）
+            if (normalizedStatus === 'pending') {
+                const inviterName = message.inviterName || ('用户' + message.inviterId);
+                const groupName = message.groupName || ('群组' + message.groupId);
+                const notificationMessage = `${inviterName} 邀请您加入群聊 ${groupName}`;
+                
+                this._trigger('showSystemNotification', { 
+                    title: '新群聊邀请', 
+                    message: notificationMessage, 
+                    type: 'info' 
+                });
+            }
         } catch (e) {
             console.error('[StompClientWrapper] 处理群组邀请消息出错:', e);
         }
@@ -1272,6 +1401,209 @@ class StompClientWrapper {
         });
     }
 
+    // 处理群组管理通知
+    _handleGroupNotification(message) {
+        try {
+            console.log('[StompClientWrapper] 处理群组通知:', message);
+            
+            // 检查是否是群组邀请（GroupInvitationResponse对象）
+            if (message.id && message.groupId && message.inviterId && !message.type) {
+                console.log('[StompClientWrapper] 识别为群组邀请通知，转发到群组邀请处理器');
+                this._handleGroupInvite(message);
+                return;
+            }
+            
+            // 处理群组管理通知（包含type字段）
+            switch (message.type) {
+                case 'GROUP_MEMBER_REMOVED':
+                    this._handleMemberRemovedNotification(message);
+                    break;
+                case 'GROUP_NAME_CHANGED':
+                    this._handleGroupNameChangedNotification(message);
+                    break;
+                case 'GROUP_DISSOLVED':
+                    this._handleGroupDissolvedNotification(message);
+                    break;
+                case 'groupInvite':
+                    // 处理群组邀请相关通知（包括加入成功）
+                    this._handleGroupInviteNotification(message);
+                    break;
+                case 'GROUP_EXIT_SUCCESS':
+                    // 处理退出群组成功通知
+                    this._handleGroupExitSuccessNotification(message);
+                    break;
+                default:
+                    console.log('[StompClientWrapper] 未处理的群组通知类型:', message.type);
+                    // 对于未知类型，仍然显示系统通知
+                    if (message.message) {
+                        this._trigger('showSystemNotification', {
+                            title: '群组通知',
+                            message: message.message,
+                            type: 'info'
+                        });
+                    }
+            }
+        } catch (e) {
+            console.error('[StompClientWrapper] 处理群组通知失败:', e);
+        }
+    }
+
+    // 处理成员被移除通知
+    _handleMemberRemovedNotification(message) {
+        console.log('[StompClientWrapper] 处理成员被移除通知:', message);
+        
+        // 显示通知消息
+        const notificationMessage = message.message || '您已被移出群组';
+        this._trigger('showSystemNotification', {
+            title: '群组通知',
+            message: notificationMessage,
+            type: 'warning'
+        });
+        
+        // 刷新群组列表，因为用户可能被移出某个群组
+        this.refreshGroups()
+            .then(() => {
+                console.log('[StompClientWrapper] 因成员被移除，群组列表已刷新');
+            })
+            .catch(error => {
+                console.error('[StompClientWrapper] 刷新群组列表失败:', error);
+            });
+    }
+
+    // 处理群名变更通知
+    _handleGroupNameChangedNotification(message) {
+        console.log('[StompClientWrapper] 处理群名变更通知:', message);
+        
+        // 显示通知消息
+        const notificationMessage = message.message || `群组名称已更新`;
+        this._trigger('showSystemNotification', {
+            title: '群名变更',
+            message: notificationMessage,
+            type: 'info'
+        });
+        
+        // 刷新群组列表以获取新的群名
+        this.refreshGroups()
+            .then(() => {
+                console.log('[StompClientWrapper] 因群名变更，群组列表已刷新');
+            })
+            .catch(error => {
+                console.error('[StompClientWrapper] 刷新群组列表失败:', error);
+            });
+    }
+
+    // 处理群组解散通知
+    _handleGroupDissolvedNotification(message) {
+        console.log('[StompClientWrapper] 处理群组解散通知:', message);
+        
+        // 显示通知消息
+        const notificationMessage = message.message || '群组已被解散';
+        this._trigger('showSystemNotification', {
+            title: '群组解散',
+            message: notificationMessage,
+            type: 'error'
+        });
+        
+        // 刷新群组列表，因为群组已被解散
+        this.refreshGroups()
+            .then(() => {
+                console.log('[StompClientWrapper] 因群组解散，群组列表已刷新');
+            })
+            .catch(error => {
+                console.error('[StompClientWrapper] 刷新群组列表失败:', error);
+            });
+    }
+
+    // 获取通知标题
+    _getNotificationTitle(type) {
+        const titleMap = {
+            'GROUP_MEMBER_REMOVED': '群组通知',
+            'GROUP_NAME_CHANGED': '群名变更',
+            'GROUP_DISSOLVED': '群组解散',
+            'GROUP_INVITE': '群组邀请'
+        };
+        return titleMap[type] || '系统通知';
+    }
+
+    // 获取通知类型
+    _getNotificationType(type) {
+        const typeMap = {
+            'GROUP_MEMBER_REMOVED': 'warning',
+            'GROUP_NAME_CHANGED': 'info',
+            'GROUP_DISSOLVED': 'error',
+            'GROUP_INVITE': 'info'
+        };
+        return typeMap[type] || 'info';
+    }
+
+    // 处理群组事件（从群组事件频道收到的）
+    _handleGroupEvent(event) {
+        console.log('[StompClientWrapper] 处理群组事件:', event);
+        
+        try {
+            switch (event.type) {
+                case 'MEMBER_REMOVED':
+                    this._handleGroupMemberRemovedEvent(event);
+                    break;
+                case 'GROUP_NAME_CHANGED':
+                    this._handleGroupNameChangedEvent(event);
+                    break;
+                case 'GROUP_DISSOLVED':
+                    this._handleGroupDissolvedEvent(event);
+                    break;
+                default:
+                    console.log('[StompClientWrapper] 未处理的群组事件类型:', event.type);
+            }
+        } catch (e) {
+            console.error('[StompClientWrapper] 处理群组事件失败:', e);
+        }
+    }
+
+    // 处理群组成员被移除事件
+    _handleGroupMemberRemovedEvent(event) {
+        console.log('[StompClientWrapper] 处理群组成员被移除事件:', event);
+        
+        // 刷新群组详情（如果当前正在查看该群组的详情）
+        if (event.groupId) {
+            // 触发群组详情更新事件
+            this._trigger('onGroupMemberChanged', event);
+        }
+    }
+
+    // 处理群组名称变更事件
+    _handleGroupNameChangedEvent(event) {
+        console.log('[StompClientWrapper] 处理群组名称变更事件:', event);
+        
+        // 更新本地群组列表中的群名
+        if (event.groupId && event.newName) {
+            const group = this.groups.value.find(g => g.groupId === event.groupId);
+            if (group) {
+                group.groupName = event.newName;
+                console.log('[StompClientWrapper] 本地更新群组名称:', group);
+            }
+            
+            // 触发群组信息更新事件
+            this._trigger('onGroupInfoChanged', event);
+        }
+    }
+
+    // 处理群组解散事件（其他成员收到的通知）
+    _handleGroupDissolvedEvent(event) {
+        console.log('[StompClientWrapper] 处理群组解散事件:', event);
+        
+        // 从本地群组列表中移除该群组
+        if (event.groupId) {
+            const index = this.groups.value.findIndex(g => g.groupId === event.groupId);
+            if (index !== -1) {
+                const removedGroup = this.groups.value.splice(index, 1)[0];
+                console.log('[StompClientWrapper] 从本地移除解散的群组:', removedGroup);
+            }
+            
+            // 触发群组解散事件
+            this._trigger('onGroupDissolved', event);
+        }
+    }
+
     // --- 发送消息 ---
     sendPublicMessage(content, groupId, fileData = null) {
         // 增强连接状态检查
@@ -1284,14 +1616,14 @@ class StompClientWrapper {
         
         const destination = '/app/chat/channel'; // 发送到后端的 @MessageMapping
         try {
-            // 生成临时消息ID用于确认
-            const tempId = 'temp_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+            // 使用新的临时消息ID生成器
+            const tempId = this.generateTempId();
             
             // 构建消息载荷，支持文件消息
             const messagePayload = { 
                 content: content, 
                 groupId: groupId,
-                tempId: tempId // 添加临时ID
+                tempId: tempId
             };
             
             // 如果有文件数据，添加到消息中
@@ -1341,14 +1673,14 @@ class StompClientWrapper {
         
         const destination = '/app/chat/private'; 
         try {
-            // 生成临时消息ID用于确认
-            const tempId = 'temp_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+            // 使用新的临时消息ID生成器
+            const tempId = this.generateTempId();
             
             // 构建消息载荷，支持文件消息
             const messagePayload = {
                 receiverId: toUserId,   // Use receiverId to match backend getter
                 content: content,       // Content is essential
-                tempId: tempId         // 添加临时ID
+                tempId: tempId
             };
             
             // 如果有文件数据，添加到消息中
@@ -1381,6 +1713,76 @@ class StompClientWrapper {
             console.error(`[StompClientWrapper] 发送私人消息失败:`, e);
             this._trigger('onError', `发送私人消息失败: ${e.message}`);
             return false;
+        }
+    }
+
+    // 处理群组邀请相关通知（包括加入成功）
+    _handleGroupInviteNotification(message) {
+        console.log('[StompClientWrapper] 处理群组邀请通知:', message);
+        
+        try {
+            // 检查是否是加入成功的通知
+            if (message.status === 'accepted' && message.inviteeId === this.currentUserId.value) {
+                console.log('[StompClientWrapper] 收到群组加入成功通知');
+                
+                // 显示成功通知
+                const groupName = message.groupName || '群组';
+                this._trigger('showSystemNotification', {
+                    title: '加入群组',
+                    message: `您已成功加入群聊 ${groupName}`,
+                    type: 'success'
+                });
+                
+                // 刷新群组列表
+                this.refreshGroups()
+                    .then(() => {
+                        console.log('[StompClientWrapper] 因群组加入成功，群组列表已刷新');
+                    })
+                    .catch(error => {
+                        console.error('[StompClientWrapper] 刷新群组列表失败:', error);
+                    });
+                
+                // 刷新群组邀请列表
+                this.refreshGroupInvitations()
+                    .then(invitations => {
+                        console.log('[StompClientWrapper] 群组邀请列表已刷新:', invitations);
+                        this._trigger('onGroupInvitationsUpdated', invitations);
+                    })
+                    .catch(error => {
+                        console.error('[StompClientWrapper] 刷新群组邀请列表失败:', error);
+                    });
+            } else {
+                // 其他群组邀请通知，转发到群组邀请处理器
+                this._handleGroupInvite(message);
+            }
+        } catch (e) {
+            console.error('[StompClientWrapper] 处理群组邀请通知失败:', e);
+        }
+    }
+
+    // 处理退出群组成功通知
+    _handleGroupExitSuccessNotification(message) {
+        console.log('[StompClientWrapper] 处理退出群组成功通知:', message);
+        
+        try {
+            // 显示退出成功通知
+            const groupName = message.groupName || '群组';
+            this._trigger('showSystemNotification', {
+                title: '退出群组',
+                message: `您已成功退出群聊 ${groupName}`,
+                type: 'success'
+            });
+            
+            // 刷新群组列表
+            this.refreshGroups()
+                .then(() => {
+                    console.log('[StompClientWrapper] 因退出群组成功，群组列表已刷新');
+                })
+                .catch(error => {
+                    console.error('[StompClientWrapper] 刷新群组列表失败:', error);
+                });
+        } catch (e) {
+            console.error('[StompClientWrapper] 处理退出群组成功通知失败:', e);
         }
     }
 }
