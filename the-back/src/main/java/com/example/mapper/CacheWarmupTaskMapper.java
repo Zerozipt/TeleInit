@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.example.entity.dto.CacheWarmupTask;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.Delete;
 import org.apache.ibatis.annotations.Param;
 
 import java.util.List;
@@ -55,7 +56,7 @@ public interface CacheWarmupTaskMapper extends BaseMapper<CacheWarmupTask> {
      * @param days 保留天数
      * @return 删除的任务数量
      */
-    @Select("DELETE FROM cache_warmup_tasks " +
+    @Delete("DELETE FROM cache_warmup_tasks " +
             "WHERE status = 'COMPLETED' AND processed_at < DATE_SUB(NOW(), INTERVAL #{days} DAY)")
     int cleanupCompletedTasks(@Param("days") int days);
 } 

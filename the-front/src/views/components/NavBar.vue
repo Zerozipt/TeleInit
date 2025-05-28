@@ -24,11 +24,11 @@
 
     <!-- Bottom items like Settings and Logout -->
     <div class="nav-items-bottom">
-       <!-- Settings Placeholder -->
-       <div class="nav-item settings-placeholder">
+       <!-- Settings -->
+       <router-link to="/index/settings" class="nav-item" active-class="active">
          <el-icon><Setting /></el-icon>
          <span>设置</span>
-       </div>
+       </router-link>
 
        <!-- Logout Button -->
        <div class="nav-item logout-item" @click="userLogout">
@@ -130,9 +130,5 @@ function userLogout(){
 
 .logout-item {
   /* Specific styles for logout if needed */
-}
-
-.settings-placeholder {
-    /* Styles for settings icon */
 }
 </style> 

@@ -91,6 +91,7 @@ public class ChatCacheServiceImpl implements ChatCacheService {
     }
 
     @Override
+    
     public List<Group_message> getGroupChatHistory(String groupId, int limit) {
         String key = RedisKeys.CHAT_GROUP + groupId;
         
@@ -197,5 +198,29 @@ public class ChatCacheServiceImpl implements ChatCacheService {
             return messages.subList(messages.size() - limit, messages.size());
         }
         return messages;
+    }
+
+    @Override
+    public void clearUserChatCache(Integer userId) {
+        try {
+            // 清除私聊缓存
+            String privateChatKey = RedisKeys.CHAT_PRIVATE + userId;
+            redisService.delete(privateChatKey);
+            
+            // 清除用户最近对话缓存
+            String recentDialogsKey = String.format(RedisKeys.USER_DIALOGS_RECENT, userId);
+            redisService.delete(recentDialogsKey);
+            
+            // 清除用户未读消息缓存
+            String unreadPrivKey = String.format(RedisKeys.USER_UNREAD_PRIV, userId);
+            redisService.delete(unreadPrivKey);
+            
+            // 注意：群组缓存通常是按groupId缓存的，用户名修改不会直接影响
+            // 但是如果有用户相关的群组缓存（比如包含用户名的），也需要清除
+            
+            logger.info("已清除用户{}的聊天相关缓存", userId);
+        } catch (Exception e) {
+            logger.error("清除用户{}聊天缓存失败: {}", userId, e.getMessage(), e);
+        }
     }
 } 

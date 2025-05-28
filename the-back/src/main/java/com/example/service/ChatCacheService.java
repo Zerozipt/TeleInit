@@ -34,4 +34,10 @@ public interface ChatCacheService {
      * @return 私聊消息列表
      */
     List<PrivateChatMessage> getPrivateChatHistory(int userId, int limit);
+
+    /**
+     * 清除用户相关的聊天缓存
+     * @param userId 用户ID
+     */
+    void clearUserChatCache(Integer userId);
 } 

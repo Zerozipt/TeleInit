@@ -11,7 +11,7 @@
  Target Server Version : 80404 (8.4.4)
  File Encoding         : 65001
 
- Date: 24/05/2025 16:03:31
+ Date: 24/05/2025 23:30:38
 */
 
 SET NAMES utf8mb4;
@@ -69,7 +69,7 @@ CREATE TABLE `friends`  (
   UNIQUE INDEX `uk_friend_request`(`the_first_user_id` ASC, `the_second_user_id` ASC, `STATUS` ASC) USING BTREE,
   INDEX `idx_friends_status`(`STATUS` ASC, `created_at` ASC) USING BTREE,
   INDEX `idx_friends_user_pair`(`the_first_user_id` ASC, `the_second_user_id` ASC) USING BTREE
-) ENGINE = InnoDB AUTO_INCREMENT = 18 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci ROW_FORMAT = DYNAMIC;
+) ENGINE = InnoDB AUTO_INCREMENT = 20 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci ROW_FORMAT = DYNAMIC;
 
 -- ----------------------------
 -- Table structure for group
@@ -104,7 +104,7 @@ CREATE TABLE `group_invitations`  (
   INDEX `idx_group_inviter`(`group_id` ASC, `inviter_id` ASC) USING BTREE,
   UNIQUE INDEX `uk_group_invitation`(`group_id` ASC, `inviter_id` ASC, `invitee_id` ASC, `status` ASC) USING BTREE,
   INDEX `idx_group_invitations_status`(`status` ASC, `created_at` ASC) USING BTREE
-) ENGINE = InnoDB AUTO_INCREMENT = 13 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = '群组邀请表' ROW_FORMAT = DYNAMIC;
+) ENGINE = InnoDB AUTO_INCREMENT = 17 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = '群组邀请表' ROW_FORMAT = DYNAMIC;
 
 -- ----------------------------
 -- Table structure for group_members
@@ -144,7 +144,7 @@ CREATE TABLE `group_messages`  (
   INDEX `idx_sender`(`SenderId` ASC) USING BTREE,
   INDEX `idx_time`(`Create_at` ASC) USING BTREE,
   INDEX `idx_group_messages_group_time`(`groupId` ASC, `Create_at` ASC) USING BTREE
-) ENGINE = InnoDB AUTO_INCREMENT = 1914960728448692238 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = '群组消息表' ROW_FORMAT = DYNAMIC;
+) ENGINE = InnoDB AUTO_INCREMENT = 1914960728448692243 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = '群组消息表' ROW_FORMAT = DYNAMIC;
 
 -- ----------------------------
 -- Table structure for outbox_events
@@ -163,7 +163,7 @@ CREATE TABLE `outbox_events`  (
   PRIMARY KEY (`id`) USING BTREE,
   INDEX `idx_status_created`(`status` ASC, `created_at` ASC) USING BTREE,
   INDEX `idx_entity_type`(`entity_id` ASC, `event_type` ASC) USING BTREE
-) ENGINE = InnoDB AUTO_INCREMENT = 10 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci ROW_FORMAT = Dynamic;
+) ENGINE = InnoDB AUTO_INCREMENT = 16 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------
 -- Table structure for private_messages
@@ -185,7 +185,7 @@ CREATE TABLE `private_messages`  (
   INDEX `messageQueryBySender`(`sender_id` ASC) USING BTREE,
   INDEX `messageQueryByReciver`(`receiver_id` ASC) USING BTREE,
   INDEX `idx_private_messages_conversation`(`sender_id` ASC, `receiver_id` ASC, `created_at` ASC) USING BTREE
-) ENGINE = InnoDB AUTO_INCREMENT = 1918598219437199426 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci ROW_FORMAT = DYNAMIC;
+) ENGINE = InnoDB AUTO_INCREMENT = 1918598219437199432 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci ROW_FORMAT = DYNAMIC;
 
 -- ----------------------------
 -- Triggers structure for table friends

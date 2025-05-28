@@ -32,6 +32,8 @@ public class MailQueueListener {
             case "register" -> createMessage("注册验证码", "您的验证码是：" + code +",有效时间3分钟，请勿向他人泄露验证码信息", email);
             case "reset" -> createMessage("找回密码验证码", "您的验证码是：" + code
                     + ",有效时间三分钟，若非本人操作，请无视该邮件", email);
+            case "password-change" -> createMessage("密码修改验证码", "您的验证码是：" + code
+                    + ",有效时间三分钟，用于密码修改验证，若非本人操作，请无视该邮件", email);
             default -> null;
         };
         if(message == null) return;

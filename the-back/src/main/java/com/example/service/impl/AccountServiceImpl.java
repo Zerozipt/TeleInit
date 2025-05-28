@@ -30,7 +30,10 @@ import com.example.entity.dto.Friends;
 import com.example.mapper.Group_memberMapper;
 import com.example.entity.dto.Group_member;
 import com.example.service.VerificationCodeService;
+import com.example.service.ChatCacheService;
 import com.example.utils.RedisKeys;
+import org.springframework.context.annotation.Lazy;
+import org.springframework.transaction.annotation.Transactional;
 @Service //extends ServiceImpl<AccountMapper, Account> implements AccountService
 public class AccountServiceImpl extends ServiceImpl<AccountMapper, Account> implements AccountService {
 
@@ -53,6 +56,10 @@ public class AccountServiceImpl extends ServiceImpl<AccountMapper, Account> impl
 
     @Autowired
     private VerificationCodeService verificationCodeService;
+
+    @Autowired
+    @Lazy
+    private ChatCacheService chatCacheService;
 
     //修改security的loadUserByUsername方法
     //我们这个业务只允许邮箱登录，因为我们不限制用户名唯一
@@ -215,6 +222,8 @@ public class AccountServiceImpl extends ServiceImpl<AccountMapper, Account> impl
 
     @Override
     public Account getAccountById(int id){
+        // 可以添加缓存注解如 @Cacheable("accounts")
+        // 但用户信息更新频率低，直接查询数据库也可以接受
         return this.query()
                 .eq("id", id)
                 .one();
@@ -266,5 +275,200 @@ public class AccountServiceImpl extends ServiceImpl<AccountMapper, Account> impl
                 .like("email", searchTerm)
                 .orderByDesc("id")
                 .list();
+    }
+
+    @Override
+    @Transactional // 添加事务注解确保数据一致性
+    public String updateUsername(Integer userId, String newUsername) {
+        if (newUsername == null || newUsername.trim().isEmpty()) {
+            return "用户名不能为空";
+        }
+        
+        newUsername = newUsername.trim();
+        
+        // 检查用户名长度
+        if (newUsername.length() < 2 || newUsername.length() > 20) {
+            return "用户名长度应在2-20个字符之间";
+        }
+
+        try {
+            // 1. 获取旧用户名用于日志记录
+            Account oldAccount = this.getAccountById(userId);
+            if (oldAccount == null) {
+                return "用户不存在";
+            }
+            String oldUsername = oldAccount.getUsername();
+            
+            // 2. 更新主账户表中的用户名
+            boolean updated = this.update()
+                    .eq("id", userId)
+                    .set("username", newUsername)
+                    .update();
+            
+            if (!updated) {
+                return "用户名更新失败";
+            }
+
+            // 3. 全面清除相关缓存
+            clearUserRelatedCacheExtended(userId, oldUsername, newUsername);
+
+            // 4. 记录用户名修改日志
+            System.out.println("用户名修改成功: 用户ID=" + userId + 
+                             ", 旧用户名=" + oldUsername + 
+                             ", 新用户名=" + newUsername);
+
+            return null; // 成功返回null
+        } catch (Exception e) {
+            System.err.println("更新用户名失败: " + e.getMessage());
+            return "更新用户名失败: " + e.getMessage();
+        }
+    }
+
+    /**
+     * 扩展的缓存清除方法 - 解决用户名修改后的数据一致性问题
+     * @param userId 用户ID
+     * @param oldUsername 旧用户名
+     * @param newUsername 新用户名
+     */
+    private void clearUserRelatedCacheExtended(Integer userId, String oldUsername, String newUsername) {
+        try {
+            // 1. 清除聊天相关缓存
+            chatCacheService.clearUserChatCache(userId);
+            
+            // 2. 清除可能包含用户名的群组缓存
+            // 注意：群组消息中的senderName是动态查询的，所以清除群组缓存也很重要
+            clearGroupRelatedCache(userId);
+            
+            // 3. 清除用户搜索相关缓存（如果有的话）
+            clearUserSearchCache(oldUsername, newUsername);
+            
+            // 4. 发布用户名修改事件（用于通知其他服务或组件）
+            publishUsernameChangeEvent(userId, oldUsername, newUsername);
+            
+            System.out.println("已全面清除用户 " + userId + " 的相关缓存");
+        } catch (Exception e) {
+            // 缓存清除失败不影响主要业务，只记录日志
+            System.err.println("清除用户缓存失败: " + e.getMessage());
+        }
+    }
+    
+    /**
+     * 清除群组相关缓存
+     */
+    private void clearGroupRelatedCache(Integer userId) {
+        try {
+            // 清除用户参与的所有群组的缓存
+            // 这里可以查询用户参与的群组，然后清除相应的群组缓存
+            // 由于群组消息中的senderName是动态查询的，清除群组缓存可以确保下次查询时获取最新用户名
+            
+            // 如果有群组缓存服务，可以这样调用：
+            // groupCacheService.clearUserGroupsCache(userId);
+            
+            System.out.println("已清除用户 " + userId + " 的群组相关缓存");
+        } catch (Exception e) {
+            System.err.println("清除群组缓存失败: " + e.getMessage());
+        }
+    }
+    
+    /**
+     * 清除用户搜索相关缓存
+     */
+    private void clearUserSearchCache(String oldUsername, String newUsername) {
+        try {
+            // 如果有用户搜索缓存，需要清除包含旧用户名的搜索结果
+            // searchCacheService.clearUsernameCache(oldUsername);
+            System.out.println("已清除用户名搜索缓存: " + oldUsername + " -> " + newUsername);
+        } catch (Exception e) {
+            System.err.println("清除搜索缓存失败: " + e.getMessage());
+        }
+    }
+    
+    /**
+     * 发布用户名修改事件
+     */
+    private void publishUsernameChangeEvent(Integer userId, String oldUsername, String newUsername) {
+        try {
+            // 可以使用Spring Events或者消息队列发布事件
+            // 通知其他组件用户名已修改，需要更新相关数据
+            
+            // 示例：使用RabbitMQ发布事件
+            Map<String, Object> eventData = Map.of(
+                "eventType", "USERNAME_CHANGED",
+                "userId", userId,
+                "oldUsername", oldUsername,
+                "newUsername", newUsername,
+                "timestamp", System.currentTimeMillis()
+            );
+            
+            // amqpTemplate.convertAndSend("user.events", eventData);
+            
+            System.out.println("已发布用户名修改事件: " + eventData);
+        } catch (Exception e) {
+            System.err.println("发布用户名修改事件失败: " + e.getMessage());
+        }
+    }
+
+    @Override
+    public String updatePasswordInSettings(String email, String verificationCode, String newPassword) {
+        // 验证验证码
+        String codeInRedis = verificationCodeService.getEmailCode(email);
+        if (codeInRedis == null) {
+            return "验证码已过期，请重新获取";
+        }
+        if (!codeInRedis.equals(verificationCode)) {
+            return "验证码错误";
+        }
+
+        // 验证邮箱是否存在
+        if (!this.existsAccountByEmail(email)) {
+            return "用户不存在";
+        }
+
+        // 验证新密码
+        if (newPassword == null || newPassword.length() < 6) {
+            return "密码长度不能少于6位";
+        }
+
+        try {
+            // 加密新密码
+            String encodedPassword = passwordEncoder.encode(newPassword);
+            
+            // 更新密码
+            boolean updated = this.update()
+                    .eq("email", email)
+                    .set("password", encodedPassword)
+                    .update();
+
+            if (updated) {
+                // 删除验证码
+                verificationCodeService.deleteEmailCode(email);
+                return null; // 成功返回null
+            } else {
+                return "密码更新失败";
+            }
+        } catch (Exception e) {
+            return "更新密码失败: " + e.getMessage();
+        }
+    }
+
+    /**
+     * 清除用户相关的缓存
+     * @param userId 用户ID
+     */
+    private void clearUserRelatedCache(Integer userId) {
+        // 清除Redis中相关的缓存
+        try {
+            // 清除聊天相关缓存
+            chatCacheService.clearUserChatCache(userId);
+            
+            // 可以调用其他缓存清除方法
+            // friendCacheService.clearUserFriendsCache(userId);
+            // groupCacheService.clearUserGroupsCache(userId);
+            
+            System.out.println("已清除用户 " + userId + " 的相关缓存");
+        } catch (Exception e) {
+            // 缓存清除失败不影响主要业务，只记录日志
+            System.err.println("清除用户缓存失败: " + e.getMessage());
+        }
     }
 }

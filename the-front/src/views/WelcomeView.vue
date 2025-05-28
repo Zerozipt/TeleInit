@@ -40,7 +40,7 @@ function goToRegister() {
   <div class="welcome-container">
     <header class="header">
       <div class="logo">
-        <h1>社区论坛</h1>
+        <h1>TeleInit聊天平台</h1>
       </div>
       <div class="nav-container">
         <div class="nav-left" v-if="unauthorized">
@@ -59,7 +59,7 @@ function goToRegister() {
     </main>
 
     <footer class="footer">
-      <p>© 2024 社区论坛 - 版权所有</p>
+      <p>© 2024 TeleInit聊天平台 - 版权所有</p>
     </footer>
   </div>
 </template>
@@ -69,12 +69,12 @@ function goToRegister() {
   min-height: 100vh;
   display: flex;
   flex-direction: column;
-  background-color: #f5f7fa;
+  background-color: #1a1a1a;
 }
 
 .header {
-  background-color: #fff;
-  box-shadow: 0 2px 12px 0 rgba(0, 0, 0, 0.1);
+  background-color: #2d2d2d;
+  box-shadow: 0 2px 12px 0 rgba(0, 0, 0, 0.3);
   padding: 0 20px;
   height: 60px;
   display: flex;
@@ -83,6 +83,7 @@ function goToRegister() {
   position: sticky;
   top: 0;
   z-index: 1000;
+  border-bottom: 1px solid #404040;
 }
 
 .logo h1 {
@@ -105,6 +106,7 @@ function goToRegister() {
 .welcome-user {
   margin-right: 10px;
   font-weight: 500;
+  color: #ffffff;
 }
 
 .main-content {
@@ -116,9 +118,49 @@ function goToRegister() {
 }
 
 .footer {
-  background-color: #fff;
+  background-color: #2d2d2d;
   padding: 15px 0;
   text-align: center;
-  color: #909399;
+  color: #b0b0b0;
+  border-top: 1px solid #404040;
+}
+
+/* 深色主题下的按钮样式定制 */
+:deep(.el-button) {
+  border-radius: 6px;
+}
+
+:deep(.el-button--primary) {
+  background-color: #409EFF;
+  border-color: #409EFF;
+  color: #ffffff;
+}
+
+:deep(.el-button--primary:hover) {
+  background-color: #66b1ff;
+  border-color: #66b1ff;
+}
+
+:deep(.el-button--default) {
+  background-color: #404040;
+  border-color: #555555;
+  color: #ffffff;
+}
+
+:deep(.el-button--default:hover) {
+  background-color: #555555;
+  border-color: #666666;
+  color: #ffffff;
+}
+
+:deep(.el-button--danger) {
+  background-color: #f56c6c;
+  border-color: #f56c6c;
+  color: #ffffff;
+}
+
+:deep(.el-button--danger:hover) {
+  background-color: #f78989;
+  border-color: #f78989;
 }
 </style>

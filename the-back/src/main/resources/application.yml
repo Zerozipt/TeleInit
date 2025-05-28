@@ -11,7 +11,7 @@ spring:
   security:
     jwt:
       key : abcdefghi
-      expire : 7
+      expire : 168
   data:
     redis:
       port: 26739

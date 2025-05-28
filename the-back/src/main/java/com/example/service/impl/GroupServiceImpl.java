@@ -75,7 +75,6 @@ public class GroupServiceImpl implements GroupService {
         }
         
         try {
-            // P0优化：直接创建，让数据库唯一约束处理重复名称
             Group newGroup = new Group();
             newGroup.setGroupId(UUID.randomUUID().toString());
             newGroup.setName(groupName);

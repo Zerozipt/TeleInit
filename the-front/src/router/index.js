@@ -22,11 +22,6 @@ const router = createRouter({
                     path: 'register',
                     name: 'welcome-register',
                     component: () => import('@/views/Welcome/RegisterPage.vue')
-                },
-                {
-                    path: 'forget',
-                    name: 'welcome-forget',
-                    component: () => import('@/views/Welcome/ForgetPage.vue')
                 }
             ],
         },
@@ -51,6 +46,11 @@ const router = createRouter({
                     name: 'group-detail',
                     component: () => import('@/views/components/group/GroupDetailView.vue'),
                     props: true
+                },
+                {
+                    path: 'settings',
+                    name: 'index-settings',
+                    component: () => import('@/views/SettingsView.vue')
                 }
             ]
         }
